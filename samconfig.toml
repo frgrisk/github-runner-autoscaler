@@ -4,6 +4,6 @@ stack_name = "github-runner-autoscaler"
 resolve_s3 = true
 s3_prefix = "github-runner-autoscaler"
 region = "us-east-2"
-confirm_changeset = true
+confirm_changeset = false
 capabilities = "CAPABILITY_IAM"
 image_repositories = []

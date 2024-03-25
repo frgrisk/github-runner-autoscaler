@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -18,8 +19,22 @@ import (
 )
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	event, err := github.ParseWebHook(request.Headers[github.EventTypeHeader], []byte(request.Body))
+	var githubEventHeader string
+	for k, v := range request.MultiValueHeaders {
+		if strings.EqualFold(k, github.EventTypeHeader) {
+			if len(v) > 0 {
+				githubEventHeader = v[0]
+			}
+			break
+		}
+	}
+	if githubEventHeader == "" {
+		slog.Info("no github event header")
+		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+	}
+	event, err := github.ParseWebHook(githubEventHeader, []byte(request.Body))
 	if err != nil {
+		slog.Error("error parsing webhook", "error", err.Error())
 		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
 	}
 	switch event := event.(type) {
