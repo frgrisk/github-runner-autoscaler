@@ -121,6 +121,7 @@ func main() {
 }
 
 var userData = `#!/bin/bash
+shutdown +60
 sed -i 's/ap-southeast-3/us-east-2/g' /etc/apt/sources.list
 usermod -aG docker ubuntu
 cd /opt
