@@ -80,7 +80,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				MinCount:                          aws.Int32(1),
 				MaxCount:                          aws.Int32(1),
 				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String("ami-03e4da53713ec75d7"),
+				ImageId:                           aws.String("ami-006ec9c897f91ca58"),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
 				SubnetId:                          aws.String("subnet-0c7485057fba6c4f6"),
@@ -139,5 +139,5 @@ GITHUB_TOKEN=$(curl -L \
   https://api.github.com/orgs/frgrisk/actions/runners/registration-token | jq -r .token)
 sudo -u ubuntu ./config.sh --url https://github.com/frgrisk --token $GITHUB_TOKEN --disableupdate --ephemeral --labels $INSTANCE_TYPE,ephemeral,X64 --unattended
 sudo -u ubuntu ./run.sh
-sudo shutdown now
+shutdown now
 `
