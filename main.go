@@ -74,7 +74,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}
 		}
 		slog.Info("creating instance", "instanceType", instanceType)
-		_, err = svc.RunInstances(
+		output, err := svc.RunInstances(
 			context.TODO(),
 			&ec2.RunInstancesInput{
 				MinCount:                          aws.Int32(1),
@@ -103,8 +103,23 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		)
 		if err != nil {
 			slog.Error(err.Error())
-			return events.APIGatewayProxyResponse{StatusCode: 500}, err
+			return events.APIGatewayProxyResponse{
+				Body:       err.Error(),
+				StatusCode: 500,
+			}, err
 		}
+		if len(output.Instances) == 0 {
+			slog.Info("no instance created")
+			return events.APIGatewayProxyResponse{
+				Body:       "no instance created",
+				StatusCode: 500,
+			}, nil
+		}
+		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
+		return events.APIGatewayProxyResponse{
+			Body:       *output.Instances[0].InstanceId,
+			StatusCode: 200,
+		}, nil
 
 	default:
 		fmt.Printf("unknown event type %T\n", event)
