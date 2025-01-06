@@ -80,7 +80,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				MinCount:                          aws.Int32(1),
 				MaxCount:                          aws.Int32(1),
 				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String("ami-0f3d17420a346dd5f"),
+				ImageId:                           aws.String("ami-09fcc09e0c62bc5d3"),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
 				SubnetId:                          aws.String("subnet-0c7485057fba6c4f6"),
