@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/go-github/v60/github"
 )
 
@@ -48,6 +50,22 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: 500}, err
 		}
 		svc := ec2.NewFromConfig(cfg)
+		sm := secretsmanager.NewFromConfig(cfg)
+		secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
+		if secretName == "" {
+			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
+			return events.APIGatewayProxyResponse{StatusCode: 500}, fmt.Errorf("secret name missing")
+		}
+		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
+		if err != nil {
+			slog.Error("failed to get secret", "error", err.Error())
+			return events.APIGatewayProxyResponse{StatusCode: 500}, err
+		}
+		pat := aws.ToString(secretOut.SecretString)
+		extraLabels := os.Getenv("EXTRA_RUNNER_LABELS")
+		if extraLabels != "" {
+			extraLabels = "," + extraLabels
+		}
 		tags := []types.Tag{
 			{
 				Key:   aws.String("GitHub Workflow Job Event ID"),
@@ -74,6 +92,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}
 		}
 		slog.Info("creating instance", "instanceType", instanceType)
+		finalUserData := strings.ReplaceAll(userData, "<GITHUB_PAT>", pat)
+		finalUserData = strings.ReplaceAll(finalUserData, "<EXTRA_LABELS>", extraLabels)
 		output, err := svc.RunInstances(
 			context.TODO(),
 			&ec2.RunInstancesInput{
@@ -98,7 +118,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 					},
 				},
 				// base64 encode user data
-				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
+				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 			},
 		)
 		if err != nil {
@@ -154,7 +174,7 @@ GITHUB_TOKEN=$(curl -L \
   -H "Authorization: Bearer <GITHUB_PAT>" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   https://api.github.com/orgs/frgrisk/actions/runners/registration-token | jq -r .token)
-sudo -u ubuntu ./config.sh --url https://github.com/frgrisk --token $GITHUB_TOKEN --disableupdate --ephemeral --labels $INSTANCE_TYPE,ephemeral,X64 --unattended
+sudo -u ubuntu ./config.sh --url https://github.com/frgrisk --token $GITHUB_TOKEN --disableupdate --ephemeral --labels $INSTANCE_TYPE,ephemeral,X64<EXTRA_LABELS> --unattended
 END_TIME=$(date +%s)
 EXECUTION_TIME=$((END_TIME - START_TIME))
 echo "Script execution time: $EXECUTION_TIME seconds" | tee -a /var/log/setup-time.log
