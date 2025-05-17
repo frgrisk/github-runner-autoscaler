@@ -49,7 +49,7 @@ Outputs:
     Description: "API Gateway endpoint URL for Prod environment for GitHubActionHook function"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
   GitHubActionHookFunction:
-    Description: "First Lambda Function ARN"
+    Description: "GitHub Action Hook Lambda Function ARN."
     Value: !GetAtt GitHubActionHookFunction.Arn
   GitHubActionHookFunctionIamRole:
     Description: "Implicit IAM Role created for GitHubActionHook function"
