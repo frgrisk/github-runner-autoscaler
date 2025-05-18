@@ -1,10 +1,13 @@
-package main
+package main //nolint: revive
 
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,39 +18,73 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/go-github/v60/github"
 )
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	var githubEventHeader string
+
 	for k, v := range request.MultiValueHeaders {
 		if strings.EqualFold(k, github.EventTypeHeader) {
 			if len(v) > 0 {
 				githubEventHeader = v[0]
 			}
+
 			break
 		}
 	}
+
 	if githubEventHeader == "" {
 		slog.Info("no github event header")
-		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+
+		return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 	}
+
 	event, err := github.ParseWebHook(githubEventHeader, []byte(request.Body))
 	if err != nil {
 		slog.Error("error parsing webhook", "error", err.Error())
-		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+
+		return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 	}
+
 	switch event := event.(type) {
 	case *github.WorkflowJobEvent:
 		if event.GetAction() != "queued" {
 			slog.Info("not a queued job event")
-			return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
+
 		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-2"))
 		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: 500}, err
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
+
 		svc := ec2.NewFromConfig(cfg)
+		sm := secretsmanager.NewFromConfig(cfg)
+
+		secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
+		if secretName == "" {
+			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("secret name missing")
+		}
+
+		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
+		if err != nil {
+			slog.Error("failed to get secret", "error", err.Error())
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+		}
+
+		pat := aws.ToString(secretOut.SecretString)
+
+		extraLabels := os.Getenv("EXTRA_RUNNER_LABELS")
+		if extraLabels != "" {
+			extraLabels = "," + extraLabels
+		}
+
 		tags := []types.Tag{
 			{
 				Key:   aws.String("GitHub Workflow Job Event ID"),
@@ -58,22 +95,32 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				Value: aws.String("GitHub Workflow Ephemeral Runner"),
 			},
 		}
+
 		ephemeral := slices.Contains(event.GetWorkflowJob().Labels, "ephemeral")
 		if !ephemeral {
 			slog.Info("not ephemeral")
-			return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
+
 		instanceType := types.InstanceTypeC7aLarge
+
 		instanceTypes := instanceType.Values()
 		for _, label := range event.GetWorkflowJob().Labels {
 			for i := range instanceTypes {
 				if label == string(instanceTypes[i]) {
 					instanceType = instanceTypes[i]
+
 					break
 				}
 			}
 		}
+
 		slog.Info("creating instance", "instanceType", instanceType)
+
+		finalUserData := strings.ReplaceAll(userData, "<GITHUB_PAT>", pat)
+		finalUserData = strings.ReplaceAll(finalUserData, "<EXTRA_LABELS>", extraLabels)
+
 		output, err := svc.RunInstances(
 			context.TODO(),
 			&ec2.RunInstancesInput{
@@ -98,37 +145,43 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 					},
 				},
 				// base64 encode user data
-				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
+				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 			},
 		)
 		if err != nil {
 			slog.Error(err.Error())
+
 			return events.APIGatewayProxyResponse{
 				Body:       err.Error(),
-				StatusCode: 500,
+				StatusCode: http.StatusInternalServerError,
 			}, err
 		}
+
 		if len(output.Instances) == 0 {
-			slog.Info("no instance created")
+			slog.Error("no instance created")
+
 			return events.APIGatewayProxyResponse{
 				Body:       "no instance created",
-				StatusCode: 500,
+				StatusCode: http.StatusInternalServerError,
 			}, nil
 		}
+
 		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
+
 		return events.APIGatewayProxyResponse{
 			Body:       *output.Instances[0].InstanceId,
-			StatusCode: 200,
+			StatusCode: http.StatusOK,
 		}, nil
 
 	default:
-		fmt.Printf("unknown event type %T\n", event)
-	}
+		err = fmt.Errorf("unknown event type %T", event)
+		slog.Error(err.Error())
 
-	return events.APIGatewayProxyResponse{
-		Body:       "Hello World",
-		StatusCode: 200,
-	}, nil
+		return events.APIGatewayProxyResponse{
+			Body:       err.Error(),
+			StatusCode: http.StatusInternalServerError,
+		}, err
+	}
 }
 
 func main() {
@@ -154,7 +207,7 @@ GITHUB_TOKEN=$(curl -L \
   -H "Authorization: Bearer <GITHUB_PAT>" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   https://api.github.com/orgs/frgrisk/actions/runners/registration-token | jq -r .token)
-sudo -u ubuntu ./config.sh --url https://github.com/frgrisk --token $GITHUB_TOKEN --disableupdate --ephemeral --labels $INSTANCE_TYPE,ephemeral,X64 --unattended
+sudo -u ubuntu ./config.sh --url https://github.com/frgrisk --token $GITHUB_TOKEN --disableupdate --ephemeral --labels $INSTANCE_TYPE,ephemeral,X64<EXTRA_LABELS> --unattended
 END_TIME=$(date +%s)
 EXECUTION_TIME=$((END_TIME - START_TIME))
 echo "Script execution time: $EXECUTION_TIME seconds" | tee -a /var/log/setup-time.log
