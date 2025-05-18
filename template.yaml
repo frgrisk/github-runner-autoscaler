@@ -9,6 +9,18 @@ Parameters:
     Type: String
     Default: ""
     Description: Additional comma separated labels for the runner
+  ImageId:
+    Type: String
+    Description: AMI ID for the runner instances
+  SubnetId:
+    Type: String
+    Description: Subnet ID for the runner instances
+  SecurityGroupIds:
+    Type: String
+    Description: Comma separated security group IDs for the runner
+  KeyName:
+    Type: String
+    Description: EC2 key pair name for the runner
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
@@ -38,6 +50,10 @@ Resources:
         Variables:
           GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
           EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
+          IMAGE_ID: !Ref ImageId
+          SUBNET_ID: !Ref SubnetId
+          SECURITY_GROUP_IDS: !Ref SecurityGroupIds
+          KEY_NAME: !Ref KeyName
       Policies:
         - Statement:
             - Sid: RunInstances
