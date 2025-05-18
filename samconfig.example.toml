@@ -5,18 +5,10 @@ stack_name = "github-runner-autoscaler"
 region = "us-east-2"
 resolve_s3 = true
 s3_prefix = "github-runner-autoscaler"
-[default.deploy.parameters.parameter_overrides]
-ImageId = "ami-0c0c88099397fccb4"
+capabilities = "CAPABILITY_IAM"
 GitHubPATSecretName = "github-runner-autoscaler-pat"
-
-[dev.deploy.parameters.parameter_overrides]
-ExtraRunnerLabels = "dev"
-SubnetId = "subnet-12345678"
-SecurityGroupIds = "sg-12345678"
-KeyName = "terraform-20220125192645402400000001"
-
-[prod.deploy.parameters.parameter_overrides]
-ExtraRunnerLabels = "dev"
-SubnetId = "subnet-98765432"
-SecurityGroupIds = "sg-98765432"
-KeyName = "terraform-20220125192645402400000002"
+ExtraRunnerLabels = "example"
+ImageId = "ami-0c0c88099397fccb4"
+SubnetId = "subnet-1234567890def"
+SecurityGroupIds = "sg-1234567890def"
+KeyName = "terraform-20250518"
