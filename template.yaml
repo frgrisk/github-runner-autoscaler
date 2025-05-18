@@ -1,6 +1,15 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 
+Parameters:
+  GitHubPATSecretName:
+    Type: String
+    Description: Name of the Secrets Manager secret containing the GitHub PAT
+  ExtraRunnerLabels:
+    Type: String
+    Default: ""
+    Description: Additional comma separated labels for the runner
+
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
@@ -27,7 +36,8 @@ Resources:
                   Caching: false
       Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
         Variables:
-          PARAM1: VALUE
+          GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
+          EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
       Policies:
         - Statement:
             - Sid: RunInstances
@@ -38,6 +48,11 @@ Resources:
                 - ec2:CreateTags
                 - ec2:RunInstances
               Resource: "*"
+            - Sid: GetGitHubPAT
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GitHubPATSecretName}*
     Metadata:
       BuildMethod: makefile
 
