@@ -104,6 +104,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("security groups missing")
 		}
+
 		securityGroups := strings.Split(sgIDs, ",")
 
 		keyName := os.Getenv("KEY_NAME")

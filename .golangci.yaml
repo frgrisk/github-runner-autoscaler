@@ -12,6 +12,7 @@ linters:
     - lll
     - cyclop
     - funlen
+    - maintidx
 formatters:
   # Enable specific formatter.
   # Default: [] (uses standard Go formatting)
