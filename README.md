@@ -31,3 +31,15 @@ sam deploy \
 The `ExtraRunnerLabels` parameter is optional. When supplied, the labels are
 added to the default runner labels. All other parameters are required and must
 be specified for your environment.
+
+## Local `samconfig.toml`
+
+This repository ignores `samconfig.toml` so you can maintain environment-
+specific settings locally. Copy `samconfig.toml.example` to `samconfig.toml`
+and adjust the values for your AWS account. Then run SAM commands with the
+desired configuration environment, for example:
+
+```bash
+sam build --config-env dev
+sam deploy --config-env dev
+```

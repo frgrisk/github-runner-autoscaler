@@ -26,4 +26,5 @@ bootstrap
 
 .aws-sam
 
+# Local SAM configuration (not committed)
 samconfig.toml
