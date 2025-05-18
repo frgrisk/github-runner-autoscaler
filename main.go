@@ -18,6 +18,18 @@ import (
 	"github.com/google/go-github/v60/github"
 )
 
+type ec2RunInstancesAPI interface {
+	RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
+}
+
+var newEC2Client = func(cfg aws.Config) ec2RunInstancesAPI {
+	return ec2.NewFromConfig(cfg)
+}
+
+var loadAWSConfig = func(ctx context.Context, optFns ...func(*config.LoadOptions) error) (aws.Config, error) {
+	return config.LoadDefaultConfig(ctx, optFns...)
+}
+
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	var githubEventHeader string
 	for k, v := range request.MultiValueHeaders {
@@ -32,7 +44,16 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		slog.Info("no github event header")
 		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
 	}
-	event, err := github.ParseWebHook(githubEventHeader, []byte(request.Body))
+	body := request.Body
+	if request.IsBase64Encoded {
+		decoded, err := base64.StdEncoding.DecodeString(request.Body)
+		if err != nil {
+			slog.Error("failed to decode body", "error", err.Error())
+			return events.APIGatewayProxyResponse{StatusCode: 400}, nil
+		}
+		body = string(decoded)
+	}
+	event, err := github.ParseWebHook(githubEventHeader, []byte(body))
 	if err != nil {
 		slog.Error("error parsing webhook", "error", err.Error())
 		return events.APIGatewayProxyResponse{StatusCode: 200}, nil
@@ -43,11 +64,11 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Info("not a queued job event")
 			return events.APIGatewayProxyResponse{StatusCode: 200}, nil
 		}
-		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-2"))
+		cfg, err := loadAWSConfig(context.TODO(), config.WithRegion("us-east-2"))
 		if err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: 500}, err
 		}
-		svc := ec2.NewFromConfig(cfg)
+		svc := newEC2Client(cfg)
 		tags := []types.Tag{
 			{
 				Key:   aws.String("GitHub Workflow Job Event ID"),
