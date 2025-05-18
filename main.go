@@ -130,10 +130,17 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				ImageId:                           aws.String("ami-0c0c88099397fccb4"),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
-				SubnetId:                          aws.String("subnet-0c7485057fba6c4f6"),
-				SecurityGroupIds:                  []string{"sg-0e61236689c685844"},
-				KeyName:                           aws.String("terraform-20220125192645402400000001"),
-				Monitoring:                        &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
+					{
+						AssociatePublicIpAddress: aws.Bool(true),
+						SubnetId:                 aws.String("subnet-0eb6da43c6f0ef528"),
+						DeleteOnTermination:      aws.Bool(true),
+						DeviceIndex:              aws.Int32(0),
+						Groups:                   []string{"sg-0f185b577cb2b2802"},
+					},
+				},
+				KeyName:    aws.String("terraform-20220125192645402400000001"),
+				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 				TagSpecifications: []types.TagSpecification{
 					{
 						ResourceType: types.ResourceTypeInstance,
