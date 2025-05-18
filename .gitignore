@@ -28,3 +28,4 @@ bootstrap
 
 # Local SAM configuration (not committed)
 samconfig.toml
+samconfig.yaml
