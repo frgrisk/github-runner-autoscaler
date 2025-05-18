@@ -15,13 +15,19 @@ aws secretsmanager create-secret --name my-github-pat --secret-string <PAT>
 
 ## Deployment
 
-Deploy the stack with SAM and provide the secret name and any additional runner
-labels as parameters:
+Deploy the stack with SAM and provide the secret name, AMI, subnet, security groups and
+EC2 key pair used for the runner. You may also specify additional runner labels:
 
 ```bash
 sam deploy \
-  --parameter-overrides GitHubPATSecretName=my-github-pat ExtraRunnerLabels="gpu"
+  --parameter-overrides GitHubPATSecretName=my-github-pat \
+  ExtraRunnerLabels="gpu" \
+  ImageId=ami-0123456789abcdef0 \
+  SubnetId=subnet-12345678 \
+  SecurityGroupIds=sg-12345678 \
+  KeyName=my-key
 ```
 
 The `ExtraRunnerLabels` parameter is optional. When supplied, the labels are
-added to the default runner labels.
+added to the default runner labels. All other parameters are required and must
+be specified for your environment.

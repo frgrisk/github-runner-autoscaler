@@ -85,6 +85,35 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			extraLabels = "," + extraLabels
 		}
 
+		subnetID := os.Getenv("SUBNET_ID")
+		if subnetID == "" {
+			slog.Error("SUBNET_ID env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("subnet id missing")
+		}
+
+		sgIDs := os.Getenv("SECURITY_GROUP_IDS")
+		if sgIDs == "" {
+			slog.Error("SECURITY_GROUP_IDS env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("security groups missing")
+		}
+		securityGroups := strings.Split(sgIDs, ",")
+
+		keyName := os.Getenv("KEY_NAME")
+		if keyName == "" {
+			slog.Error("KEY_NAME env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("key name missing")
+		}
+
+		imageID := os.Getenv("IMAGE_ID")
+		if imageID == "" {
+			slog.Error("IMAGE_ID env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("image id missing")
+		}
+
 		tags := []types.Tag{
 			{
 				Key:   aws.String("GitHub Workflow Job Event ID"),
@@ -127,19 +156,19 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				MinCount:                          aws.Int32(1),
 				MaxCount:                          aws.Int32(1),
 				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String("ami-0c0c88099397fccb4"),
+				ImageId:                           aws.String(imageID),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
 				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 					{
 						AssociatePublicIpAddress: aws.Bool(true),
-						SubnetId:                 aws.String("subnet-0eb6da43c6f0ef528"),
+						SubnetId:                 aws.String(subnetID),
 						DeleteOnTermination:      aws.Bool(true),
 						DeviceIndex:              aws.Int32(0),
-						Groups:                   []string{"sg-0f185b577cb2b2802"},
+						Groups:                   securityGroups,
 					},
 				},
-				KeyName:    aws.String("terraform-20220125192645402400000001"),
+				KeyName:    aws.String(keyName),
 				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 				TagSpecifications: []types.TagSpecification{
 					{
