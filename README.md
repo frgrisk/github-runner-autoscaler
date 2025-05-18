@@ -34,10 +34,10 @@ be specified for your environment.
 
 ## Local `samconfig.toml`
 
-This repository ignores `samconfig.toml` so you can maintain environment-
-specific settings locally. Copy `samconfig.toml.example` to `samconfig.toml`
-and adjust the values for your AWS account. Then run SAM commands with the
-desired configuration environment, for example:
+This repository ignores `samconfig.toml` and `samconfig.yaml` so you can
+maintain environment-specific settings locally. Copy `samconfig.example.yaml`
+to `samconfig.yaml` and adjust the values for your AWS account. Then run SAM
+commands with the desired configuration environment, for example:
 
 ```bash
 sam build --config-env dev
