@@ -9,14 +9,12 @@ s3_prefix = "github-runner-autoscaler"
 ImageId = "ami-0c0c88099397fccb4"
 GitHubPATSecretName = "github-runner-autoscaler-pat"
 
-[dev.deploy.parameters]
 [dev.deploy.parameters.parameter_overrides]
 ExtraRunnerLabels = "dev"
 SubnetId = "subnet-12345678"
 SecurityGroupIds = "sg-12345678"
 KeyName = "terraform-20220125192645402400000001"
 
-[prod.deploy.parameters]
 [prod.deploy.parameters.parameter_overrides]
 ExtraRunnerLabels = "dev"
 SubnetId = "subnet-98765432"
