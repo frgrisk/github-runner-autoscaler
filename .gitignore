@@ -25,3 +25,5 @@ go.work
 bootstrap
 
 .aws-sam
+
+samconfig.toml
