@@ -29,6 +29,37 @@ Globals:
     MemorySize: 128
 
 Resources:
+  # IAM Role for EC2 instances
+  RunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
+
+  RunnerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref RunnerInstanceRole
   GitHubActionHookFunction:
     Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
@@ -54,6 +85,7 @@ Resources:
           SUBNET_ID: !Ref SubnetId
           SECURITY_GROUP_IDS: !Ref SecurityGroupIds
           KEY_NAME: !Ref KeyName
+          INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
       Policies:
         - Statement:
             - Sid: RunInstances

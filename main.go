@@ -79,7 +79,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
 		if err != nil {
-			slog.Error("failed to get secret", "error", err.Error())
+			slog.Error("failed to get secret", "secret", secretName, "error", err.Error())
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
@@ -112,6 +112,13 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Error("KEY_NAME env var not set")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("key name missing")
+		}
+
+		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
+		if instanceProfileArn == "" {
+			slog.Error("INSTANCE_PROFILE_ARN env var not set")
+
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("instance profile arn missing")
 		}
 
 		imageID := os.Getenv("IMAGE_ID")
@@ -175,6 +182,9 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				ImageId:                           aws.String(imageID),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
+				IamInstanceProfile: &types.IamInstanceProfileSpecification{
+					Arn: aws.String(instanceProfileArn),
+				},
 				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 					{
 						AssociatePublicIpAddress: aws.Bool(true),
