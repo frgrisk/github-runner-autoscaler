@@ -60,6 +60,20 @@ Resources:
     Properties:
       Roles:
         - !Ref RunnerInstanceRole
+  
+  # CloudWatch Log Groups with retention
+  GitHubActionHookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GitHubActionHookFunction}'
+      RetentionInDays: 14
+  
+  EC2RunnerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/ec2/github-runner'
+      RetentionInDays: 14
+  
   GitHubActionHookFunction:
     Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
