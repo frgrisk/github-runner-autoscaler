@@ -21,11 +21,17 @@ Parameters:
   KeyName:
     Type: String
     Description: EC2 key pair name for the runner
+  WarmPoolConfig:
+    Type: String
+    Default: "{}"
+    Description: >
+      JSON map of instance type to pool size. Empty {} disables warm pool.
+      Example: {"c8a.2xlarge":2,"c8a.4xlarge":1}
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 5
+    Timeout: 30
     MemorySize: 128
 
 Resources:
@@ -86,6 +92,7 @@ Resources:
           SECURITY_GROUP_IDS: !Ref SecurityGroupIds
           KEY_NAME: !Ref KeyName
           INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
+          WARM_POOL_CONFIG: !Ref WarmPoolConfig
       Policies:
         - Statement:
             - Sid: RunInstances
@@ -95,6 +102,14 @@ Resources:
                 - iam:PassRole
                 - ec2:CreateTags
                 - ec2:RunInstances
+              Resource: "*"
+            - Sid: WarmPoolManagement
+              Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:StartInstances
+                - ec2:StopInstances
+                - ec2:ModifyInstanceAttribute
               Resource: "*"
             - Sid: GetGitHubPAT
               Effect: Allow
