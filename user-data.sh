@@ -57,19 +57,16 @@ sed -i 's/ap-southeast-3/us-east-2/g' /etc/apt/sources.list
 # Add ubuntu user to docker group
 usermod -aG docker ubuntu
 
-# Setup runner directory
-cd /opt
-mkdir -p actions-runner
-chown -R ubuntu:ubuntu actions-runner
-cd actions-runner
+# Use pre-extracted runner directory
+cd /opt/actions-runner
 
-# Extract runner
-log_to_cloudwatch "INFO" "Extracting GitHub runner"
-if ! sudo -u ubuntu tar xzf ../runner-cache/actions-runner-linux-* -C .; then
-    log_to_cloudwatch "ERROR" "Failed to extract runner archive"
+# Verify runner exists
+if [ ! -f "./run.sh" ]; then
+    log_to_cloudwatch "ERROR" "Runner not found at /opt/actions-runner"
     shutdown now
     exit 1
 fi
+log_to_cloudwatch "INFO" "Using pre-extracted GitHub runner"
 
 # Get instance type (we already have instance ID from earlier)
 INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
