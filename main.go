@@ -325,7 +325,125 @@ func replenishWarmPool(ctx context.Context, svc *ec2.Client, instanceType types.
 	slog.Info("launched warm pool replacement", "instanceID", *newID)
 }
 
-func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+// getLaunchConfig builds LaunchConfig from environment variables.
+func getLaunchConfig() (LaunchConfig, error) {
+	subnetID := os.Getenv("SUBNET_ID")
+	if subnetID == "" {
+		return LaunchConfig{}, errors.New("SUBNET_ID env var not set")
+	}
+
+	sgIDs := os.Getenv("SECURITY_GROUP_IDS")
+	if sgIDs == "" {
+		return LaunchConfig{}, errors.New("SECURITY_GROUP_IDS env var not set")
+	}
+
+	keyName := os.Getenv("KEY_NAME")
+	if keyName == "" {
+		return LaunchConfig{}, errors.New("KEY_NAME env var not set")
+	}
+
+	instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
+	if instanceProfileArn == "" {
+		return LaunchConfig{}, errors.New("INSTANCE_PROFILE_ARN env var not set")
+	}
+
+	imageID := os.Getenv("IMAGE_ID")
+	if imageID == "" {
+		return LaunchConfig{}, errors.New("IMAGE_ID env var not set")
+	}
+
+	return LaunchConfig{
+		ImageID:            imageID,
+		SubnetID:           subnetID,
+		SecurityGroups:     strings.Split(sgIDs, ","),
+		KeyName:            keyName,
+		InstanceProfileArn: instanceProfileArn,
+	}, nil
+}
+
+// handleMaintenance processes scheduled warm pool maintenance events.
+func handleMaintenance() error {
+	slog.Info("warm pool maintenance triggered")
+
+	poolConfig := parseWarmPoolConfig()
+	if poolConfig == nil || len(poolConfig) == 0 {
+		slog.Info("warm pool not configured, skipping maintenance")
+		return nil
+	}
+
+	ctx := context.TODO()
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-east-2"))
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	svc := ec2.NewFromConfig(cfg)
+
+	launchConfig, err := getLaunchConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get launch config: %w", err)
+	}
+
+	// Check and replenish each configured instance type
+	for instanceTypeStr, targetSize := range poolConfig {
+		if targetSize <= 0 {
+			continue
+		}
+
+		instanceType := types.InstanceType(instanceTypeStr)
+		currentCount, err := countWarmPoolInstances(ctx, svc, instanceType)
+		if err != nil {
+			slog.Warn("failed to count warm pool", "instanceType", instanceType, "error", err.Error())
+			continue
+		}
+
+		slog.Info("checking warm pool", "instanceType", instanceType, "current", currentCount, "target", targetSize)
+
+		// Launch instances to reach target size
+		for currentCount < targetSize {
+			newID, err := launchWarmPoolInstance(ctx, svc, instanceType, launchConfig)
+			if err != nil {
+				slog.Error("failed to launch warm pool instance", "instanceType", instanceType, "error", err.Error())
+				break
+			}
+			slog.Info("launched warm pool instance", "instanceType", instanceType, "instanceID", *newID)
+			currentCount++
+		}
+	}
+
+	slog.Info("warm pool maintenance complete")
+	return nil
+}
+
+// MaintenanceEvent represents a scheduled maintenance event from CloudWatch.
+type MaintenanceEvent struct {
+	Source string `json:"source"`
+}
+
+func handler(ctx context.Context, rawEvent json.RawMessage) (interface{}, error) {
+	// Try to detect if this is a maintenance event
+	var maintenanceEvent MaintenanceEvent
+	if err := json.Unmarshal(rawEvent, &maintenanceEvent); err == nil {
+		if maintenanceEvent.Source == "warmPoolMaintenance" {
+			if err := handleMaintenance(); err != nil {
+				slog.Error("maintenance failed", "error", err.Error())
+				return nil, err
+			}
+			return map[string]string{"status": "ok"}, nil
+		}
+	}
+
+	// Otherwise, treat as API Gateway event
+	var request events.APIGatewayProxyRequest
+	if err := json.Unmarshal(rawEvent, &request); err != nil {
+		slog.Error("failed to parse API Gateway event", "error", err.Error())
+		return events.APIGatewayProxyResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	return handleWebhook(request)
+}
+
+func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	var githubEventHeader string
 
 	for k, v := range request.MultiValueHeaders {

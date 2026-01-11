@@ -83,6 +83,13 @@ Resources:
               - method.request.header.X-GitHub-Event:
                   Required: true
                   Caching: false
+        WarmPoolMaintenance:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Maintain warm pool of EC2 instances
+            Enabled: true
+            Input: '{"source": "warmPoolMaintenance"}'
       Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
         Variables:
           GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
