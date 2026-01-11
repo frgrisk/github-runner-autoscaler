@@ -115,11 +115,11 @@ func startWarmInstance(ctx context.Context, svc *ec2.Client, instanceID string, 
 
 	// Update user data with the full setup script wrapped in multipart format
 	// so it runs on every boot (including this activation)
+	// Note: BlobAttributeValue handles base64 encoding automatically, don't pre-encode
 	wrappedUserData := wrapInMultipart(finalUserData)
-	encodedUserData := base64.StdEncoding.EncodeToString([]byte(wrappedUserData))
 	_, err = svc.ModifyInstanceAttribute(ctx, &ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),
-		UserData:   &types.BlobAttributeValue{Value: []byte(encodedUserData)},
+		UserData:   &types.BlobAttributeValue{Value: []byte(wrappedUserData)},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update user data: %w", err)
