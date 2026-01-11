@@ -21,11 +21,17 @@ Parameters:
   KeyName:
     Type: String
     Description: EC2 key pair name for the runner
+  WarmPoolConfig:
+    Type: String
+    Default: "{}"
+    Description: >
+      JSON map of instance type to pool size. Empty {} disables warm pool.
+      Example: {"c8a.2xlarge":2,"c8a.4xlarge":1}
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 5
+    Timeout: 30
     MemorySize: 128
 
 Resources:
@@ -54,6 +60,15 @@ Resources:
                   - logs:PutLogEvents
                   - logs:DescribeLogStreams
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
+        - PolicyName: SSMJITConfigPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/github-runner/jit-config/*'
 
   RunnerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -77,6 +92,13 @@ Resources:
               - method.request.header.X-GitHub-Event:
                   Required: true
                   Caching: false
+        WarmPoolMaintenance:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Maintain warm pool of EC2 instances
+            Enabled: true
+            Input: '{"source": "warmPoolMaintenance"}'
       Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
         Variables:
           GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
@@ -86,6 +108,7 @@ Resources:
           SECURITY_GROUP_IDS: !Ref SecurityGroupIds
           KEY_NAME: !Ref KeyName
           INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
+          WARM_POOL_CONFIG: !Ref WarmPoolConfig
       Policies:
         - Statement:
             - Sid: RunInstances
@@ -96,11 +119,25 @@ Resources:
                 - ec2:CreateTags
                 - ec2:RunInstances
               Resource: "*"
+            - Sid: WarmPoolManagement
+              Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:StartInstances
+                - ec2:StopInstances
+                - ec2:ModifyInstanceAttribute
+              Resource: "*"
             - Sid: GetGitHubPAT
               Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GitHubPATSecretName}*
+            - Sid: SSMJITConfig
+              Effect: Allow
+              Action:
+                - ssm:PutParameter
+                - ssm:DeleteParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/github-runner/jit-config/*
     Metadata:
       BuildMethod: makefile
 
