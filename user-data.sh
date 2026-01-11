@@ -57,16 +57,29 @@ sed -i 's/ap-southeast-3/us-east-2/g' /etc/apt/sources.list
 # Add ubuntu user to docker group
 usermod -aG docker ubuntu
 
-# Use pre-extracted runner directory
-cd /opt/actions-runner
+# Use pre-extracted runner if available, otherwise extract from cache
+if [ -d "/opt/actions-runner" ] && [ -f "/opt/actions-runner/run.sh" ]; then
+    log_to_cloudwatch "INFO" "Using pre-extracted GitHub runner"
+    cd /opt/actions-runner
+else
+    log_to_cloudwatch "INFO" "Pre-extracted runner not found, extracting from cache"
 
-# Verify runner exists
-if [ ! -f "./run.sh" ]; then
-    log_to_cloudwatch "ERROR" "Runner not found at /opt/actions-runner"
-    shutdown now
-    exit 1
+    # Find runner archive in cache
+    RUNNER_ARCHIVE=$(ls /opt/runner-cache/actions-runner-linux-*.tar.gz 2>/dev/null | head -1)
+
+    if [ -z "$RUNNER_ARCHIVE" ]; then
+        log_to_cloudwatch "ERROR" "No runner archive found in /opt/runner-cache"
+        shutdown now
+        exit 1
+    fi
+
+    # Create directory and extract
+    mkdir -p /opt/actions-runner
+    cd /opt/actions-runner
+    tar xzf "$RUNNER_ARCHIVE"
+    chown -R ubuntu:ubuntu /opt/actions-runner
+    log_to_cloudwatch "INFO" "Extracted runner from $RUNNER_ARCHIVE"
 fi
-log_to_cloudwatch "INFO" "Using pre-extracted GitHub runner"
 
 # Get instance type (we already have instance ID from earlier)
 INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
