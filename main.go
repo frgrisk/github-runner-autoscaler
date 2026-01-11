@@ -44,13 +44,13 @@ type LaunchConfig struct {
 func parseWarmPoolConfig() map[string]int {
 	configStr := os.Getenv("WARM_POOL_CONFIG")
 	if configStr == "" || configStr == "{}" {
-		return nil
+		return map[string]int{}
 	}
 
 	var poolConfig map[string]int
 	if err := json.Unmarshal([]byte(configStr), &poolConfig); err != nil {
 		slog.Error("failed to parse WARM_POOL_CONFIG", "error", err.Error(), "config", configStr)
-		return nil
+		return map[string]int{}
 	}
 
 	return poolConfig
@@ -366,7 +366,7 @@ func handleMaintenance() error {
 	slog.Info("warm pool maintenance triggered")
 
 	poolConfig := parseWarmPoolConfig()
-	if poolConfig == nil || len(poolConfig) == 0 {
+	if len(poolConfig) == 0 {
 		slog.Info("warm pool not configured, skipping maintenance")
 		return nil
 	}
@@ -508,49 +508,10 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 			extraLabels = "," + extraLabels
 		}
 
-		subnetID := os.Getenv("SUBNET_ID")
-		if subnetID == "" {
-			slog.Error("SUBNET_ID env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("subnet id missing")
-		}
-
-		sgIDs := os.Getenv("SECURITY_GROUP_IDS")
-		if sgIDs == "" {
-			slog.Error("SECURITY_GROUP_IDS env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("security groups missing")
-		}
-
-		securityGroups := strings.Split(sgIDs, ",")
-
-		keyName := os.Getenv("KEY_NAME")
-		if keyName == "" {
-			slog.Error("KEY_NAME env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("key name missing")
-		}
-
-		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
-		if instanceProfileArn == "" {
-			slog.Error("INSTANCE_PROFILE_ARN env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("instance profile arn missing")
-		}
-
-		imageID := os.Getenv("IMAGE_ID")
-		if imageID == "" {
-			slog.Error("IMAGE_ID env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("image id missing")
-		}
-
-		launchConfig := LaunchConfig{
-			ImageID:            imageID,
-			SubnetID:           subnetID,
-			SecurityGroups:     securityGroups,
-			KeyName:            keyName,
-			InstanceProfileArn: instanceProfileArn,
+		launchConfig, err := getLaunchConfig()
+		if err != nil {
+			slog.Error("failed to get launch config", "error", err.Error())
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
 		ephemeral := slices.Contains(event.GetWorkflowJob().Labels, "ephemeral")
