@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -25,6 +24,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/google/go-github/v60/github"
 )
 
@@ -429,6 +430,23 @@ func generateJITConfig(pat, org, runnerName string, labels []string) (*JITConfig
 	return &jitResp, nil
 }
 
+// storeJITConfigInSSM stores the JIT config in SSM Parameter Store for the instance to retrieve.
+func storeJITConfigInSSM(ctx context.Context, ssmClient *ssm.Client, instanceID, jitConfig string) error {
+	paramName := fmt.Sprintf("/github-runner/jit-config/%s", instanceID)
+
+	_, err := ssmClient.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:      aws.String(paramName),
+		Value:     aws.String(jitConfig),
+		Type:      ssmtypes.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to store JIT config in SSM: %w", err)
+	}
+
+	return nil
+}
+
 // handleMaintenance processes scheduled warm pool maintenance events.
 func handleMaintenance() error {
 	slog.Info("warm pool maintenance triggered")
@@ -554,6 +572,7 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 
 		svc := ec2.NewFromConfig(cfg)
 		sm := secretsmanager.NewFromConfig(cfg)
+		ssmClient := ssm.NewFromConfig(cfg)
 
 		secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
 		if secretName == "" {
@@ -627,18 +646,6 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 
 		slog.Info("generated JIT config", "runnerID", jitConfig.Runner.ID, "runnerName", jitConfig.Runner.Name)
 
-		tpl, err := template.New("userdata").Parse(userData)
-		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, map[string]string{"JITConfig": jitConfig.EncodedJITConfig}); err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		finalUserData := buf.String()
-
 		// Get warm pool target size for this instance type
 		poolConfig := parseWarmPoolConfig()
 		targetSize := poolConfig[string(instanceType)]
@@ -647,13 +654,13 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 		var instanceID *string
 		if targetSize > 0 {
 			slog.Info("checking warm pool", "instanceType", instanceType, "targetSize", targetSize)
-			instanceID = tryAcquireWarmInstance(ctx, svc, instanceType, jobEventID, finalUserData)
+			instanceID = tryAcquireWarmInstance(ctx, svc, instanceType, jobEventID, userData)
 		}
 
 		// Launch fresh instance if warm pool not available or not configured
 		if instanceID == nil {
 			slog.Info("launching fresh instance", "instanceType", instanceType)
-			instanceID, err = launchFreshInstance(ctx, svc, instanceType, launchConfig, finalUserData, jobEventID)
+			instanceID, err = launchFreshInstance(ctx, svc, instanceType, launchConfig, userData, jobEventID)
 			if err != nil {
 				slog.Error("failed to launch fresh instance", "error", err.Error())
 				return events.APIGatewayProxyResponse{
@@ -663,6 +670,13 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 			}
 			slog.Info("instance launched", "instanceID", *instanceID)
 		}
+
+		// Store JIT config in SSM for the instance to retrieve
+		if err := storeJITConfigInSSM(ctx, ssmClient, *instanceID, jitConfig.EncodedJITConfig); err != nil {
+			slog.Error("failed to store JIT config in SSM", "error", err.Error())
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+		}
+		slog.Info("stored JIT config in SSM", "instanceID", *instanceID)
 
 		// Replenish warm pool if needed
 		if targetSize > 0 {

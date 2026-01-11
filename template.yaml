@@ -60,6 +60,15 @@ Resources:
                   - logs:PutLogEvents
                   - logs:DescribeLogStreams
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
+        - PolicyName: SSMJITConfigPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/github-runner/jit-config/*'
 
   RunnerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -123,6 +132,12 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GitHubPATSecretName}*
+            - Sid: SSMJITConfig
+              Effect: Allow
+              Action:
+                - ssm:PutParameter
+                - ssm:DeleteParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/github-runner/jit-config/*
     Metadata:
       BuildMethod: makefile
 

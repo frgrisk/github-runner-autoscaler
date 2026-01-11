@@ -86,16 +86,24 @@ INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169
 
 log_to_cloudwatch "INFO" "Instance: ${INSTANCE_ID}, Type: ${INSTANCE_TYPE}"
 
-# JIT config is passed from Lambda - no need to call GitHub API or run config.sh
-JIT_CONFIG="{{.JITConfig}}"
+# JIT config is stored in SSM Parameter Store by Lambda (avoids cloud-init caching issues)
+# Parameter name is /github-runner/jit-config/{instance-id}
+SSM_PARAM_NAME="/github-runner/jit-config/${INSTANCE_ID}"
 
-if [ -z "$JIT_CONFIG" ] || [ "$JIT_CONFIG" = "{{.JITConfig}}" ]; then
-    log_to_cloudwatch "ERROR" "JIT config not provided"
+log_to_cloudwatch "INFO" "Fetching JIT config from SSM: ${SSM_PARAM_NAME}"
+
+JIT_CONFIG=$(aws ssm get-parameter --name "${SSM_PARAM_NAME}" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+if [ -z "$JIT_CONFIG" ]; then
+    log_to_cloudwatch "ERROR" "JIT config not found in SSM"
     shutdown now
     exit 1
 fi
 
-log_to_cloudwatch "INFO" "JIT config received, skipping config.sh"
+# Delete the parameter after reading (one-time use)
+aws ssm delete-parameter --name "${SSM_PARAM_NAME}" 2>/dev/null || true
+
+log_to_cloudwatch "INFO" "JIT config retrieved from SSM, skipping config.sh"
 
 END_TIME=$(date +%s)
 EXECUTION_TIME=$((END_TIME - START_TIME))
