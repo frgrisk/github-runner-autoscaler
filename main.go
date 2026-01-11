@@ -56,27 +56,20 @@ func parseWarmPoolConfig() map[string]int {
 	return poolConfig
 }
 
+// warmPoolFilters returns the common filters for querying warm pool instances.
+func warmPoolFilters(instanceType types.InstanceType, states []string) []types.Filter {
+	return []types.Filter{
+		{Name: aws.String("tag:WarmPool"), Values: []string{"true"}},
+		{Name: aws.String("tag:WarmPoolStatus"), Values: []string{"available"}},
+		{Name: aws.String("tag:WarmPoolInstanceType"), Values: []string{string(instanceType)}},
+		{Name: aws.String("instance-state-name"), Values: states},
+	}
+}
+
 // findAvailableWarmInstance searches for a stopped warm pool instance of the requested type.
 func findAvailableWarmInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType) (*string, error) {
 	output, err := svc.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			{
-				Name:   aws.String("tag:WarmPool"),
-				Values: []string{"true"},
-			},
-			{
-				Name:   aws.String("tag:WarmPoolStatus"),
-				Values: []string{"available"},
-			},
-			{
-				Name:   aws.String("tag:WarmPoolInstanceType"),
-				Values: []string{string(instanceType)},
-			},
-			{
-				Name:   aws.String("instance-state-name"),
-				Values: []string{"stopped"},
-			},
-		},
+		Filters: warmPoolFilters(instanceType, []string{"stopped"}),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe instances: %w", err)
@@ -88,7 +81,7 @@ func findAvailableWarmInstance(ctx context.Context, svc *ec2.Client, instanceTyp
 		}
 	}
 
-	return nil, nil // No available instance found
+	return nil, nil
 }
 
 // startWarmInstance activates a stopped warm pool instance for a job.
@@ -154,24 +147,7 @@ func startWarmInstance(ctx context.Context, svc *ec2.Client, instanceID string, 
 // countWarmPoolInstances counts available instances in the warm pool for a given type.
 func countWarmPoolInstances(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType) (int, error) {
 	output, err := svc.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			{
-				Name:   aws.String("tag:WarmPool"),
-				Values: []string{"true"},
-			},
-			{
-				Name:   aws.String("tag:WarmPoolStatus"),
-				Values: []string{"available"},
-			},
-			{
-				Name:   aws.String("tag:WarmPoolInstanceType"),
-				Values: []string{string(instanceType)},
-			},
-			{
-				Name:   aws.String("instance-state-name"),
-				Values: []string{"stopped", "stopping"},
-			},
-		},
+		Filters: warmPoolFilters(instanceType, []string{"stopped", "stopping"}),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to describe instances: %w", err)
@@ -185,38 +161,8 @@ func countWarmPoolInstances(ctx context.Context, svc *ec2.Client, instanceType t
 	return count, nil
 }
 
-// warmPoolInitUserData is a minimal script that stops the instance on first boot.
-// Uses multipart MIME format with cloud-config to run scripts on every boot.
-const warmPoolInitUserData = `Content-Type: multipart/mixed; boundary="//"
-MIME-Version: 1.0
-
---//
-Content-Type: text/cloud-config; charset="us-ascii"
-MIME-Version: 1.0
-Content-Transfer-Encoding: 7bit
-Content-Disposition: attachment; filename="cloud-config.txt"
-
-#cloud-config
-cloud_final_modules:
-- [scripts-user, always]
-
---//
-Content-Type: text/x-shellscript; charset="us-ascii"
-MIME-Version: 1.0
-Content-Transfer-Encoding: 7bit
-Content-Disposition: attachment; filename="userdata.txt"
-
-#!/bin/bash
-# Warm pool init: just stop the instance after first boot
-# When activated, user-data will be replaced with the real setup script
-echo "Warm pool instance initializing, stopping to enter pool..."
-shutdown -h now
---//--
-`
-
-// wrapInMultipart wraps a shell script in multipart MIME format that runs on every boot.
-func wrapInMultipart(script string) string {
-	return fmt.Sprintf(`Content-Type: multipart/mixed; boundary="//"
+// multipartTemplate is the MIME multipart format for user-data that runs on every boot.
+const multipartTemplate = `Content-Type: multipart/mixed; boundary="//"
 MIME-Version: 1.0
 
 --//
@@ -237,27 +183,28 @@ Content-Disposition: attachment; filename="userdata.txt"
 
 %s
 --//--
-`, script)
+`
+
+// wrapInMultipart wraps a shell script in multipart MIME format that runs on every boot.
+func wrapInMultipart(script string) string {
+	return fmt.Sprintf(multipartTemplate, script)
 }
 
-// launchWarmPoolInstance launches a new instance destined for the warm pool.
-// Instances will stop after first boot and terminate after being used for a job.
-func launchWarmPoolInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, launchConfig LaunchConfig) (*string, error) {
-	tags := []types.Tag{
-		{Key: aws.String("WarmPool"), Value: aws.String("true")},
-		{Key: aws.String("WarmPoolStatus"), Value: aws.String("available")},
-		{Key: aws.String("WarmPoolActivated"), Value: aws.String("false")},
-		{Key: aws.String("WarmPoolInstanceType"), Value: aws.String(string(instanceType))},
-		{Key: aws.String("WarmPoolCreatedAt"), Value: aws.String(time.Now().UTC().Format(time.RFC3339))},
-		{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("GitHub Runner Warm Pool - %s", instanceType))},
-	}
+// warmPoolInitUserData is the script that stops the instance on first boot to enter the warm pool.
+var warmPoolInitUserData = wrapInMultipart(`#!/bin/bash
+# Warm pool init: just stop the instance after first boot
+# When activated, user-data will be replaced with the real setup script
+echo "Warm pool instance initializing, stopping to enter pool..."
+shutdown -h now`)
 
-	output, err := svc.RunInstances(ctx, &ec2.RunInstancesInput{
+// buildRunInstancesInput creates a base RunInstancesInput with common configuration.
+func buildRunInstancesInput(instanceType types.InstanceType, launchConfig LaunchConfig, shutdownBehavior types.ShutdownBehavior, tags []types.Tag, userData string) *ec2.RunInstancesInput {
+	return &ec2.RunInstancesInput{
 		MinCount:                          aws.Int32(1),
 		MaxCount:                          aws.Int32(1),
 		EbsOptimized:                      aws.Bool(true),
 		ImageId:                           aws.String(launchConfig.ImageID),
-		InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorStop, // STOP on first boot to enter warm pool
+		InstanceInitiatedShutdownBehavior: shutdownBehavior,
 		InstanceType:                      instanceType,
 		IamInstanceProfile: &types.IamInstanceProfileSpecification{
 			Arn: aws.String(launchConfig.InstanceProfileArn),
@@ -277,74 +224,105 @@ func launchWarmPoolInstance(ctx context.Context, svc *ec2.Client, instanceType t
 			{ResourceType: types.ResourceTypeInstance, Tags: tags},
 			{ResourceType: types.ResourceTypeVolume, Tags: tags},
 		},
-		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(warmPoolInitUserData))),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to launch warm pool instance: %w", err)
+		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
 	}
+}
 
+// launchInstance runs an EC2 instance and returns its ID.
+func launchInstance(ctx context.Context, svc *ec2.Client, input *ec2.RunInstancesInput) (*string, error) {
+	output, err := svc.RunInstances(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	if len(output.Instances) == 0 {
 		return nil, errors.New("no instance created")
 	}
-
 	return output.Instances[0].InstanceId, nil
 }
 
-// launchFreshInstance launches a new instance that terminates after use (current behavior).
-func launchFreshInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, launchConfig LaunchConfig, finalUserData string, jobEventID int64) (*string, error) {
+// launchWarmPoolInstance launches a new instance destined for the warm pool.
+// Instances will stop after first boot and terminate after being used for a job.
+func launchWarmPoolInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, launchConfig LaunchConfig) (*string, error) {
 	tags := []types.Tag{
-		{
-			Key:   aws.String("GitHub Workflow Job Event ID"),
-			Value: aws.String(strconv.FormatInt(jobEventID, 10)),
-		},
-		{
-			Key:   aws.String("Name"),
-			Value: aws.String("GitHub Workflow Ephemeral Runner"),
-		},
+		{Key: aws.String("WarmPool"), Value: aws.String("true")},
+		{Key: aws.String("WarmPoolStatus"), Value: aws.String("available")},
+		{Key: aws.String("WarmPoolActivated"), Value: aws.String("false")},
+		{Key: aws.String("WarmPoolInstanceType"), Value: aws.String(string(instanceType))},
+		{Key: aws.String("WarmPoolCreatedAt"), Value: aws.String(time.Now().UTC().Format(time.RFC3339))},
+		{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("GitHub Runner Warm Pool - %s", instanceType))},
 	}
 
-	output, err := svc.RunInstances(ctx, &ec2.RunInstancesInput{
-		MinCount:                          aws.Int32(1),
-		MaxCount:                          aws.Int32(1),
-		EbsOptimized:                      aws.Bool(true),
-		ImageId:                           aws.String(launchConfig.ImageID),
-		InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
-		InstanceType:                      instanceType,
-		IamInstanceProfile: &types.IamInstanceProfileSpecification{
-			Arn: aws.String(launchConfig.InstanceProfileArn),
-		},
-		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-			{
-				AssociatePublicIpAddress: aws.Bool(true),
-				SubnetId:                 aws.String(launchConfig.SubnetID),
-				DeleteOnTermination:      aws.Bool(true),
-				DeviceIndex:              aws.Int32(0),
-				Groups:                   launchConfig.SecurityGroups,
-			},
-		},
-		KeyName:    aws.String(launchConfig.KeyName),
-		Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
-		TagSpecifications: []types.TagSpecification{
-			{
-				ResourceType: types.ResourceTypeInstance,
-				Tags:         tags,
-			},
-			{
-				ResourceType: types.ResourceTypeVolume,
-				Tags:         tags,
-			},
-		},
-		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
-	})
+	input := buildRunInstancesInput(instanceType, launchConfig, types.ShutdownBehaviorStop, tags, warmPoolInitUserData)
+	instanceID, err := launchInstance(ctx, svc, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to launch warm pool instance: %w", err)
+	}
+	return instanceID, nil
+}
+
+// launchFreshInstance launches a new instance that terminates after use.
+func launchFreshInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, launchConfig LaunchConfig, finalUserData string, jobEventID int64) (*string, error) {
+	tags := []types.Tag{
+		{Key: aws.String("GitHub Workflow Job Event ID"), Value: aws.String(strconv.FormatInt(jobEventID, 10))},
+		{Key: aws.String("Name"), Value: aws.String("GitHub Workflow Ephemeral Runner")},
+	}
+
+	input := buildRunInstancesInput(instanceType, launchConfig, types.ShutdownBehaviorTerminate, tags, finalUserData)
+	instanceID, err := launchInstance(ctx, svc, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to launch instance: %w", err)
 	}
+	return instanceID, nil
+}
 
-	if len(output.Instances) == 0 {
-		return nil, errors.New("no instance created")
+// tryAcquireWarmInstance attempts to acquire and start a warm pool instance.
+// Returns the instance ID if successful, nil if no instance available or on failure.
+func tryAcquireWarmInstance(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, jobEventID int64, finalUserData string) *string {
+	warmInstanceID, err := findAvailableWarmInstance(ctx, svc, instanceType)
+	if err != nil {
+		slog.Warn("failed to query warm pool", "error", err.Error())
+		return nil
+	}
+	if warmInstanceID == nil {
+		slog.Info("no warm pool instance available", "instanceType", instanceType)
+		return nil
 	}
 
-	return output.Instances[0].InstanceId, nil
+	slog.Info("found warm pool instance", "instanceID", *warmInstanceID)
+
+	if err := startWarmInstance(ctx, svc, *warmInstanceID, jobEventID, finalUserData); err != nil {
+		slog.Error("failed to start warm instance", "instanceID", *warmInstanceID, "error", err.Error())
+		// Mark instance for cleanup
+		_, _ = svc.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{*warmInstanceID},
+			Tags:      []types.Tag{{Key: aws.String("WarmPoolStatus"), Value: aws.String("failed")}},
+		})
+		return nil
+	}
+
+	slog.Info("started warm pool instance", "instanceID", *warmInstanceID)
+	return warmInstanceID
+}
+
+// replenishWarmPool launches replacement instances if the pool is below target size.
+func replenishWarmPool(ctx context.Context, svc *ec2.Client, instanceType types.InstanceType, launchConfig LaunchConfig, targetSize int) {
+	currentCount, err := countWarmPoolInstances(ctx, svc, instanceType)
+	if err != nil {
+		slog.Warn("failed to count warm pool", "error", err.Error())
+		return
+	}
+	if currentCount >= targetSize {
+		return
+	}
+
+	slog.Info("replenishing warm pool", "instanceType", instanceType, "current", currentCount, "target", targetSize)
+
+	newID, err := launchWarmPoolInstance(ctx, svc, instanceType, launchConfig)
+	if err != nil {
+		slog.Warn("failed to launch warm pool replacement", "error", err.Error())
+		return
+	}
+	slog.Info("launched warm pool replacement", "instanceID", *newID)
 }
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -492,90 +470,34 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		finalUserData := buf.String()
 		jobEventID := event.GetWorkflowJob().GetID()
 
-		// Parse warm pool configuration
+		// Get warm pool target size for this instance type
 		poolConfig := parseWarmPoolConfig()
-		targetSize := 0
-		if poolConfig != nil {
-			targetSize = poolConfig[string(instanceType)]
-		}
+		targetSize := poolConfig[string(instanceType)]
 
+		// Try warm pool first if configured
 		var instanceID *string
-
-		// Try warm pool if configured for this instance type
 		if targetSize > 0 {
 			slog.Info("checking warm pool", "instanceType", instanceType, "targetSize", targetSize)
-
-			warmInstanceID, err := findAvailableWarmInstance(ctx, svc, instanceType)
-			if err != nil {
-				slog.Warn("failed to query warm pool", "error", err.Error())
-				// Fall through to fresh launch
-			} else if warmInstanceID != nil {
-				slog.Info("found warm pool instance", "instanceID", *warmInstanceID)
-
-				err = startWarmInstance(ctx, svc, *warmInstanceID, jobEventID, finalUserData)
-				if err != nil {
-					slog.Error("failed to start warm instance", "instanceID", *warmInstanceID, "error", err.Error())
-					// Mark instance for cleanup and fall through to fresh launch
-					_, _ = svc.CreateTags(ctx, &ec2.CreateTagsInput{
-						Resources: []string{*warmInstanceID},
-						Tags: []types.Tag{
-							{Key: aws.String("WarmPoolStatus"), Value: aws.String("failed")},
-						},
-					})
-				} else {
-					instanceID = warmInstanceID
-					slog.Info("started warm pool instance", "instanceID", *instanceID)
-				}
-			} else {
-				slog.Info("no warm pool instance available", "instanceType", instanceType)
-			}
+			instanceID = tryAcquireWarmInstance(ctx, svc, instanceType, jobEventID, finalUserData)
 		}
 
-		// Fallback: launch fresh instance if no warm pool instance was used
+		// Launch fresh instance if warm pool not available or not configured
 		if instanceID == nil {
 			slog.Info("launching fresh instance", "instanceType", instanceType)
-
-			if targetSize > 0 {
-				// Warm pool is configured but no instance available - launch fresh instance that terminates
-				// (Don't create a warm pool instance that will stop - we need it now)
-				instanceID, err = launchFreshInstance(ctx, svc, instanceType, launchConfig, finalUserData, jobEventID)
-				if err != nil {
-					slog.Error("failed to launch fresh instance", "error", err.Error())
-					return events.APIGatewayProxyResponse{
-						Body:       err.Error(),
-						StatusCode: http.StatusInternalServerError,
-					}, err
-				}
-			} else {
-				// No warm pool configured - launch regular instance that terminates
-				instanceID, err = launchFreshInstance(ctx, svc, instanceType, launchConfig, finalUserData, jobEventID)
-				if err != nil {
-					slog.Error("failed to launch fresh instance", "error", err.Error())
-					return events.APIGatewayProxyResponse{
-						Body:       err.Error(),
-						StatusCode: http.StatusInternalServerError,
-					}, err
-				}
+			instanceID, err = launchFreshInstance(ctx, svc, instanceType, launchConfig, finalUserData, jobEventID)
+			if err != nil {
+				slog.Error("failed to launch fresh instance", "error", err.Error())
+				return events.APIGatewayProxyResponse{
+					Body:       err.Error(),
+					StatusCode: http.StatusInternalServerError,
+				}, err
 			}
-
 			slog.Info("instance launched", "instanceID", *instanceID)
 		}
 
-		// Replenish warm pool if we used a warm instance (or if pool is under target)
+		// Replenish warm pool if needed
 		if targetSize > 0 {
-			currentCount, err := countWarmPoolInstances(ctx, svc, instanceType)
-			if err != nil {
-				slog.Warn("failed to count warm pool", "error", err.Error())
-			} else if currentCount < targetSize {
-				slog.Info("replenishing warm pool", "instanceType", instanceType, "current", currentCount, "target", targetSize)
-
-				newID, err := launchWarmPoolInstance(ctx, svc, instanceType, launchConfig)
-				if err != nil {
-					slog.Warn("failed to launch warm pool replacement", "error", err.Error())
-				} else {
-					slog.Info("launched warm pool replacement", "instanceID", *newID)
-				}
-			}
+			replenishWarmPool(ctx, svc, instanceType, launchConfig, targetSize)
 		}
 
 		return events.APIGatewayProxyResponse{
