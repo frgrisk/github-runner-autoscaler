@@ -86,88 +86,28 @@ INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169
 
 log_to_cloudwatch "INFO" "Instance: ${INSTANCE_ID}, Type: ${INSTANCE_TYPE}"
 
-# Function to get GitHub registration token with retry
-get_github_token() {
-    local max_attempts=5
-    local attempt=1
-    local delay=5
-    
-    while [ $attempt -le $max_attempts ]; do
-        log_to_cloudwatch "INFO" "Attempting to get GitHub registration token (attempt ${attempt}/${max_attempts})"
-        
-        GITHUB_TOKEN=$(curl -s -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer {{.GitHubPAT}}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/orgs/frgrisk/actions/runners/registration-token | jq -r .token)
-        
-        if [ -n "$GITHUB_TOKEN" ] && [ "$GITHUB_TOKEN" != "null" ]; then
-            log_to_cloudwatch "INFO" "Successfully obtained GitHub registration token"
-            return 0
-        fi
-        
-        log_to_cloudwatch "WARN" "Failed to get GitHub token, retrying in ${delay} seconds..."
-        sleep $delay
-        delay=$((delay * 2))
-        attempt=$((attempt + 1))
-    done
-    
-    log_to_cloudwatch "ERROR" "Failed to get GitHub registration token after ${max_attempts} attempts"
-    return 1
-}
+# JIT config is passed from Lambda - no need to call GitHub API or run config.sh
+JIT_CONFIG="{{.JITConfig}}"
 
-# Get GitHub registration token
-if ! get_github_token; then
-    log_to_cloudwatch "ERROR" "Unable to proceed without registration token"
+if [ -z "$JIT_CONFIG" ] || [ "$JIT_CONFIG" = "{{.JITConfig}}" ]; then
+    log_to_cloudwatch "ERROR" "JIT config not provided"
     shutdown now
     exit 1
 fi
 
-# Configure runner with retry
-log_to_cloudwatch "INFO" "Configuring GitHub runner"
-max_config_attempts=3
-config_attempt=1
-
-while [ $config_attempt -le $max_config_attempts ]; do
-    if sudo -u ubuntu ./config.sh \
-        --url https://github.com/frgrisk \
-        --token "$GITHUB_TOKEN" \
-        --disableupdate \
-        --ephemeral \
-        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}}" \
-        --unattended \
-        --name "ephemeral-${INSTANCE_ID}" \
-        --work _work; then
-        
-        log_to_cloudwatch "INFO" "Runner configured successfully"
-        break
-    else
-        log_to_cloudwatch "WARN" "Runner configuration failed (attempt ${config_attempt}/${max_config_attempts})"
-        config_attempt=$((config_attempt + 1))
-        if [ $config_attempt -le $max_config_attempts ]; then
-            sleep 10
-        fi
-    fi
-done
-
-if [ $config_attempt -gt $max_config_attempts ]; then
-    log_to_cloudwatch "ERROR" "Failed to configure runner after ${max_config_attempts} attempts"
-    shutdown now
-    exit 1
-fi
+log_to_cloudwatch "INFO" "JIT config received, skipping config.sh"
 
 END_TIME=$(date +%s)
 EXECUTION_TIME=$((END_TIME - START_TIME))
 log_to_cloudwatch "INFO" "Setup completed in ${EXECUTION_TIME} seconds"
 
-# Start the runner and wait for it to complete
-log_to_cloudwatch "INFO" "Starting GitHub runner"
+# Start the runner with JIT config (skips registration entirely)
+log_to_cloudwatch "INFO" "Starting GitHub runner with JIT config"
 
 # Create a temporary file to capture runner output
 RUNNER_LOG=$(mktemp /tmp/runner-output.XXXXXX)
 
-if sudo -u ubuntu ./run.sh 2>&1 | tee "${RUNNER_LOG}"; then
+if sudo -u ubuntu ./run.sh --jitconfig "$JIT_CONFIG" 2>&1 | tee "${RUNNER_LOG}"; then
     log_to_cloudwatch "INFO" "Runner completed successfully"
 else
     EXIT_CODE=$?

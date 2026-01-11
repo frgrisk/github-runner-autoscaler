@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -361,6 +362,73 @@ func getLaunchConfig() (LaunchConfig, error) {
 	}, nil
 }
 
+// JITConfigRequest represents the request body for generating a JIT runner config.
+type JITConfigRequest struct {
+	Name          string   `json:"name"`
+	RunnerGroupID int      `json:"runner_group_id"`
+	Labels        []string `json:"labels"`
+	WorkFolder    string   `json:"work_folder"`
+}
+
+// JITConfigResponse represents the response from the JIT config API.
+type JITConfigResponse struct {
+	Runner struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"runner"`
+	EncodedJITConfig string `json:"encoded_jit_config"`
+}
+
+// generateJITConfig calls the GitHub API to generate a JIT runner configuration.
+// This eliminates the need for config.sh on the runner, saving 15-30 seconds.
+func generateJITConfig(pat, org, runnerName string, labels []string) (*JITConfigResponse, error) {
+	reqBody := JITConfigRequest{
+		Name:          runnerName,
+		RunnerGroupID: 1, // Default runner group
+		Labels:        labels,
+		WorkFolder:    "_work",
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JIT config request: %w", err)
+	}
+
+	url := fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/generate-jitconfig", org)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+pat)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call JIT config API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("JIT config API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var jitResp JITConfigResponse
+	if err := json.Unmarshal(body, &jitResp); err != nil {
+		return nil, fmt.Errorf("failed to parse JIT config response: %w", err)
+	}
+
+	return &jitResp, nil
+}
+
 // handleMaintenance processes scheduled warm pool maintenance events.
 func handleMaintenance() error {
 	slog.Info("warm pool maintenance triggered")
@@ -534,7 +602,30 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 			}
 		}
 
-		slog.Info("processing job", "instanceType", instanceType, "jobID", event.GetWorkflowJob().GetID())
+		jobEventID := event.GetWorkflowJob().GetID()
+		runnerName := fmt.Sprintf("ephemeral-i-%d", jobEventID)
+
+		slog.Info("processing job", "instanceType", instanceType, "jobID", jobEventID, "runnerName", runnerName)
+
+		// Build labels for the runner
+		labels := []string{string(instanceType), "ephemeral", "X64"}
+		if extraLabels != "" {
+			// extraLabels already has leading comma, split and add non-empty labels
+			for _, label := range strings.Split(extraLabels, ",") {
+				if label = strings.TrimSpace(label); label != "" {
+					labels = append(labels, label)
+				}
+			}
+		}
+
+		// Generate JIT config from GitHub API (eliminates need for config.sh on instance)
+		jitConfig, err := generateJITConfig(pat, "frgrisk", runnerName, labels)
+		if err != nil {
+			slog.Error("failed to generate JIT config", "error", err.Error())
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+		}
+
+		slog.Info("generated JIT config", "runnerID", jitConfig.Runner.ID, "runnerName", jitConfig.Runner.Name)
 
 		tpl, err := template.New("userdata").Parse(userData)
 		if err != nil {
@@ -542,12 +633,11 @@ func handleWebhook(request events.APIGatewayProxyRequest) (events.APIGatewayProx
 		}
 
 		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels}); err != nil {
+		if err := tpl.Execute(&buf, map[string]string{"JITConfig": jitConfig.EncodedJITConfig}); err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
 		finalUserData := buf.String()
-		jobEventID := event.GetWorkflowJob().GetID()
 
 		// Get warm pool target size for this instance type
 		poolConfig := parseWarmPoolConfig()
