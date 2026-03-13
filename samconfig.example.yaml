@@ -10,10 +10,8 @@ dev:
       parameter_overrides:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=dev
-        - ImageId=ami-0c0c88099397fccb4
-        - SubnetId=subnet-0123456789def
-        - SecurityGroupIds=sg-0123456789def
-        - KeyName=terraform-2025051802
+        - SubnetTag=github-runner=true
+        - SecurityGroupTags=github-runner=true
 prod:
   deploy:
     parameters:
@@ -25,7 +23,5 @@ prod:
       parameter_overrides:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=prod
-        - ImageId=ami-0c0c88099397fccb4
-        - SubnetId=subnet-0123456789def
-        - SecurityGroupIds=sg-0123456789def
-        - KeyName=terraform-2025051801
+        - SubnetTag=github-runner=true
+        - SecurityGroupTags=github-runner=true

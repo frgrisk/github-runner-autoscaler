@@ -62,7 +62,34 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
-		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-2"))
+		// parse valid regions from env var
+		validRegions := strings.Split(os.Getenv("VALID_REGIONS"), ",")
+		region := "us-east-2"
+		imageID := ""
+		instanceType := types.InstanceTypeC7aLarge
+		instanceTypes := instanceType.Values()
+
+		for _, label := range event.GetWorkflowJob().Labels {
+			// check AMI
+			if strings.HasPrefix(label, "ami-") {
+				imageID = label
+			}
+			// check region
+			for _, r := range validRegions {
+				if label == r {
+					region = label
+					break
+				}
+			}
+			// check instance type
+			for i := range instanceTypes {
+				if label == string(instanceTypes[i]) {
+					instanceType = instanceTypes[i]
+				}
+			}
+		}
+
+		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 		if err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
@@ -91,21 +118,58 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			extraLabels = "," + extraLabels
 		}
 
-		subnetID := os.Getenv("SUBNET_ID")
-		if subnetID == "" {
-			slog.Error("SUBNET_ID env var not set")
+		// discover subnets by tag
+		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("subnet id missing")
+		filters := []types.Filter{}
+		for _, tag := range subnetTags {
+			parts := strings.SplitN(tag, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			filters = append(filters, types.Filter{
+				Name:   aws.String("tag:" + parts[0]),
+				Values: []string{parts[1]},
+			})
 		}
 
-		sgIDs := os.Getenv("SECURITY_GROUP_IDS")
-		if sgIDs == "" {
-			slog.Error("SECURITY_GROUP_IDS env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("security groups missing")
+		subnetResult, err := svc.DescribeSubnets(context.TODO(), &ec2.DescribeSubnetsInput{
+			Filters: filters,
+		})
+		if err != nil {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
-		securityGroups := strings.Split(sgIDs, ",")
+		if len(subnetResult.Subnets) == 0 {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
+				fmt.Errorf("no subnets found with tags %s in region %s", os.Getenv("SUBNET_TAGS"), region)
+		}
+
+		subnetID := *subnetResult.Subnets[0].SubnetId
+
+		// discover security groups by tag
+		sgTags := strings.Split(os.Getenv("SECURITY_GROUP_TAGS"), ",")
+
+		filters = []types.Filter{}
+		for _, tag := range sgTags {
+			parts := strings.SplitN(tag, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			filters = append(filters, types.Filter{
+				Name:   aws.String("tag:" + parts[0]),
+				Values: []string{parts[1]},
+			})
+		}
+
+		sgResult, err := svc.DescribeSecurityGroups(context.TODO(), &ec2.DescribeSecurityGroupsInput{
+			Filters: filters,
+		})
+
+		securityGroups := []string{}
+		for _, sg := range sgResult.SecurityGroups {
+			securityGroups = append(securityGroups, *sg.GroupId)
+		}
 
 		keyName := os.Getenv("KEY_NAME")
 		if keyName == "" {
@@ -119,13 +183,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Error("INSTANCE_PROFILE_ARN env var not set")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("instance profile arn missing")
-		}
-
-		imageID := os.Getenv("IMAGE_ID")
-		if imageID == "" {
-			slog.Error("IMAGE_ID env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("image id missing")
 		}
 
 		tags := []types.Tag{
@@ -144,19 +201,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Info("not ephemeral")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
-		}
-
-		instanceType := types.InstanceTypeC7aLarge
-
-		instanceTypes := instanceType.Values()
-		for _, label := range event.GetWorkflowJob().Labels {
-			for i := range instanceTypes {
-				if label == string(instanceTypes[i]) {
-					instanceType = instanceTypes[i]
-
-					break
-				}
-			}
 		}
 
 		slog.Info("creating instance", "instanceType", instanceType)
