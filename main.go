@@ -98,11 +98,14 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if secretName == "" {
 			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("secret name missing")
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("secret name missing")
 		}
 
 		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
 		if err != nil {
+			//nolint:gosec
 			slog.Error("failed to get secret", "secret", secretName, "error", err.Error())
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
@@ -116,9 +119,10 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}
 
 		// discover subnets by tag
-		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
 		const tagParts = 2
+
 		filters := []types.Filter{}
+		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
 
 		for _, tag := range subnetTags {
 			parts := strings.SplitN(tag, "=", tagParts)
