@@ -103,7 +103,9 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}, errors.New("secret name missing")
 		}
 
-		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
+		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{
+			SecretId: aws.String(secretName),
+		})
 		if err != nil {
 			//nolint:gosec
 			slog.Error("failed to get secret", "secret", secretName, "error", err.Error())
@@ -179,7 +181,9 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if instanceProfileArn == "" {
 			slog.Error("INSTANCE_PROFILE_ARN env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("instance profile arn missing")
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("instance profile arn missing")
 		}
 
 		tags := []types.Tag{
