@@ -75,11 +75,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				imageID = label
 			}
 			// check region
-			for _, r := range validRegions {
-				if label == r {
-					region = label
-					break
-				}
+			if slices.Contains(validRegions, label) {
+				region = label
 			}
 			// check instance type
 			for i := range instanceTypes {
@@ -121,10 +118,11 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		// discover subnets by tag
 		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
 
+		const tagParts = 2
 		filters := []types.Filter{}
 		for _, tag := range subnetTags {
-			parts := strings.SplitN(tag, "=", 2)
-			if len(parts) != 2 {
+			parts := strings.SplitN(tag, "=", tagParts)
+			if len(parts) != tagParts {
 				continue
 			}
 			filters = append(filters, types.Filter{
@@ -152,7 +150,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		filters = []types.Filter{}
 		for _, tag := range sgTags {
-			parts := strings.SplitN(tag, "=", 2)
+			parts := strings.SplitN(tag, "=", tagParts)
 			if len(parts) != 2 {
 				continue
 			}
