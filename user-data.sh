@@ -9,10 +9,10 @@ INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.2
 # CloudWatch logging setup
 LOG_GROUP="/aws/ec2/github-runner"
 LOG_STREAM="runner-${INSTANCE_ID}-$(date +%Y%m%d-%H%M%S)"
-REGION="us-east-2"
+REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 
 # Configure AWS CLI default region
-aws configure set default.region ${REGION}
+aws configure set default.region "${REGION}"
 
 # Function to log to CloudWatch
 log_to_cloudwatch() {
@@ -74,6 +74,9 @@ fi
 # Get instance type (we already have instance ID from earlier)
 INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
 
+# Get AMI ID
+AMI_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/ami-id)
+
 log_to_cloudwatch "INFO" "Instance: ${INSTANCE_ID}, Type: ${INSTANCE_TYPE}"
 
 # Function to get GitHub registration token with retry
@@ -125,7 +128,7 @@ while [ $config_attempt -le $max_config_attempts ]; do
         --token "$GITHUB_TOKEN" \
         --disableupdate \
         --ephemeral \
-        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}}" \
+        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}},${REGION},${AMI_ID}" \
         --unattended \
         --name "ephemeral-${INSTANCE_ID}" \
         --work _work; then
