@@ -146,8 +146,10 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}
 
 		if len(subnetResult.Subnets) == 0 {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
-				fmt.Errorf("no subnets found with tags %s in region %s", os.Getenv("SUBNET_TAGS"), region)
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, fmt.Errorf("no subnets found with tags %s in region %s",
+					os.Getenv("SUBNET_TAGS"), region)
 		}
 
 		subnetID := *subnetResult.Subnets[0].SubnetId
@@ -171,6 +173,9 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		sgResult, err := svc.DescribeSecurityGroups(context.TODO(), &ec2.DescribeSecurityGroupsInput{
 			Filters: filters,
 		})
+		if err != nil {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+		}
 
 		securityGroups := []string{}
 		for _, sg := range sgResult.SecurityGroups {
@@ -212,8 +217,12 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}
 
 		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels}); err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+
+		err = tpl.Execute(&buf, map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels})
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, fmt.Errorf("failed to execute template: %w", err)
 		}
 
 		finalUserData := buf.String()
