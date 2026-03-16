@@ -117,14 +117,15 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		// discover subnets by tag
 		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
-
 		const tagParts = 2
 		filters := []types.Filter{}
+
 		for _, tag := range subnetTags {
 			parts := strings.SplitN(tag, "=", tagParts)
 			if len(parts) != tagParts {
 				continue
 			}
+
 			filters = append(filters, types.Filter{
 				Name:   aws.String("tag:" + parts[0]),
 				Values: []string{parts[1]},
@@ -146,14 +147,15 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		subnetID := *subnetResult.Subnets[0].SubnetId
 
 		// discover security groups by tag
+		filters = []types.Filter{}
 		sgTags := strings.Split(os.Getenv("SECURITY_GROUP_TAGS"), ",")
 
-		filters = []types.Filter{}
 		for _, tag := range sgTags {
 			parts := strings.SplitN(tag, "=", tagParts)
-			if len(parts) != 2 {
+			if len(parts) != tagParts {
 				continue
 			}
+
 			filters = append(filters, types.Filter{
 				Name:   aws.String("tag:" + parts[0]),
 				Values: []string{parts[1]},
