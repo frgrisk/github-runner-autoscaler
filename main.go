@@ -171,13 +171,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			securityGroups = append(securityGroups, *sg.GroupId)
 		}
 
-		keyName := os.Getenv("KEY_NAME")
-		if keyName == "" {
-			slog.Error("KEY_NAME env var not set")
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("key name missing")
-		}
-
 		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
 		if instanceProfileArn == "" {
 			slog.Error("INSTANCE_PROFILE_ARN env var not set")
@@ -238,7 +231,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 						Groups:                   securityGroups,
 					},
 				},
-				KeyName:    aws.String(keyName),
 				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 				TagSpecifications: []types.TagSpecification{
 					{
