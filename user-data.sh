@@ -74,9 +74,6 @@ fi
 # Get instance type (we already have instance ID from earlier)
 INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
 
-# Get AMI ID
-AMI_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/ami-id)
-
 log_to_cloudwatch "INFO" "Instance: ${INSTANCE_ID}, Type: ${INSTANCE_TYPE}"
 
 # Function to get GitHub registration token with retry
@@ -128,7 +125,7 @@ while [ $config_attempt -le $max_config_attempts ]; do
         --token "$GITHUB_TOKEN" \
         --disableupdate \
         --ephemeral \
-        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}},${REGION},${AMI_ID}" \
+        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}},${REGION}" \
         --unattended \
         --name "ephemeral-${INSTANCE_ID}" \
         --work _work; then

@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,13 @@ import (
 
 //go:embed user-data.sh
 var userData string
+
+type RunnerConfiguration struct {
+	ImageID        string   `json:"ami"`
+	SubnetID       string   `json:"subnet"`
+	SecurityGroups []string `json:"sg"`
+	KeyName        string   `json:"key"`
+}
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	var githubEventHeader string
@@ -62,28 +70,36 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
-		// parse valid regions from env var
-		validRegions := strings.Split(os.Getenv("VALID_REGIONS"), ",")
-		region := "us-east-2"
-		imageID := ""
+		var runnerConfig map[string]RunnerConfiguration
+
+		err := json.Unmarshal([]byte(os.Getenv("RUNNER_CONFIGURATION")), &runnerConfig)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("error unmarshaling runner configuration")
+		}
+
+		region := os.Getenv("AWS_REGION")
+
 		instanceType := types.InstanceTypeC7aLarge
 		instanceTypes := instanceType.Values()
 
 		for _, label := range event.GetWorkflowJob().Labels {
-			// check AMI
-			if strings.HasPrefix(label, "ami-") {
-				imageID = label
-			}
-			// check region
-			if slices.Contains(validRegions, label) {
+			if _, ok := runnerConfig[label]; ok {
 				region = label
 			}
-			// check instance type
+
 			for i := range instanceTypes {
 				if label == string(instanceTypes[i]) {
 					instanceType = instanceTypes[i]
 				}
 			}
+		}
+
+		regionCfg, ok := runnerConfig[region]
+		if !ok {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
+				fmt.Errorf("no config for region %s", region)
 		}
 
 		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
@@ -118,68 +134,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		extraLabels := os.Getenv("EXTRA_RUNNER_LABELS")
 		if extraLabels != "" {
 			extraLabels = "," + extraLabels
-		}
-
-		// discover subnets by tag
-		const tagParts = 2
-
-		filters := []types.Filter{}
-		subnetTags := strings.Split(os.Getenv("SUBNET_TAGS"), ",")
-
-		for _, tag := range subnetTags {
-			parts := strings.SplitN(tag, "=", tagParts)
-			if len(parts) != tagParts {
-				continue
-			}
-
-			filters = append(filters, types.Filter{
-				Name:   aws.String("tag:" + parts[0]),
-				Values: []string{parts[1]},
-			})
-		}
-
-		subnetResult, err := svc.DescribeSubnets(context.TODO(), &ec2.DescribeSubnetsInput{
-			Filters: filters,
-		})
-		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		if len(subnetResult.Subnets) == 0 {
-			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, fmt.Errorf("no subnets found with tags %s in region %s",
-					os.Getenv("SUBNET_TAGS"), region)
-		}
-
-		subnetID := *subnetResult.Subnets[0].SubnetId
-
-		// discover security groups by tag
-		filters = []types.Filter{}
-		sgTags := strings.Split(os.Getenv("SECURITY_GROUP_TAGS"), ",")
-
-		for _, tag := range sgTags {
-			parts := strings.SplitN(tag, "=", tagParts)
-			if len(parts) != tagParts {
-				continue
-			}
-
-			filters = append(filters, types.Filter{
-				Name:   aws.String("tag:" + parts[0]),
-				Values: []string{parts[1]},
-			})
-		}
-
-		sgResult, err := svc.DescribeSecurityGroups(context.TODO(), &ec2.DescribeSecurityGroupsInput{
-			Filters: filters,
-		})
-		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		securityGroups := []string{}
-		for _, sg := range sgResult.SecurityGroups {
-			securityGroups = append(securityGroups, *sg.GroupId)
 		}
 
 		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
@@ -233,7 +187,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				MinCount:                          aws.Int32(1),
 				MaxCount:                          aws.Int32(1),
 				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String(imageID),
+				ImageId:                           aws.String(regionCfg.ImageID),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
 				IamInstanceProfile: &types.IamInstanceProfileSpecification{
@@ -242,12 +196,13 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 					{
 						AssociatePublicIpAddress: aws.Bool(true),
-						SubnetId:                 aws.String(subnetID),
+						SubnetId:                 aws.String(regionCfg.SubnetID),
 						DeleteOnTermination:      aws.Bool(true),
 						DeviceIndex:              aws.Int32(0),
-						Groups:                   securityGroups,
+						Groups:                   regionCfg.SecurityGroups,
 					},
 				},
+				KeyName:    aws.String(regionCfg.KeyName),
 				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 				TagSpecifications: []types.TagSpecification{
 					{

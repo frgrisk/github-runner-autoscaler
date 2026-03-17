@@ -9,15 +9,9 @@ Parameters:
     Type: String
     Default: ""
     Description: Additional comma separated labels for the runner
-  ValidRegions:
-    Type: CommaDelimitedList
-    Description: List of valid AWS regions for runner deployment.
-  SubnetTags:
-    Type: CommaDelimitedList
-    Description: Comma separated list of tag key-value pairs to discover subnets
-  SecurityGroupTags:
-    Type: CommaDelimitedList
-    Description: Comma separated list of tag key-value pairs to discover security groups
+  RunnerConfiguration:
+    Type: String
+    Description: JSON string defining per-region runner settings (AMI, subnet, security group, SSH key).
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
@@ -78,9 +72,7 @@ Resources:
         Variables:
           GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
           EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
-          SUBNET_TAGS: !Join [",", !Ref SubnetTags]
-          SECURITY_GROUP_TAGS: !Join [",", !Ref SecurityGroupTags]
-          VALID_REGIONS: !Join [",", !Ref ValidRegions]
+          RUNNER_CONFIGURATION: !Ref RunnerConfiguration
           INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
       Policies:
         - Statement:
