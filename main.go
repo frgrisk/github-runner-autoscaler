@@ -107,6 +107,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
+		slog.Info("creating runner in region", "region", region)
+
 		svc := ec2.NewFromConfig(cfg)
 		sm := secretsmanager.NewFromConfig(cfg)
 
@@ -219,6 +221,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			},
 		)
 		if err != nil {
+			//nolint:gosec
 			slog.Error(err.Error())
 
 			return events.APIGatewayProxyResponse{
@@ -236,6 +239,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}, nil
 		}
 
+		//nolint:gosec
 		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
 
 		return events.APIGatewayProxyResponse{
