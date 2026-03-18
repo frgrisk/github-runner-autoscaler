@@ -11,7 +11,7 @@ dev:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=dev
         - >-
-          RegionConfig={
+          RunnerConfiguration={
             "us-east-2":{
               "ami":"0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
@@ -37,7 +37,7 @@ prod:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=prod
         - >-
-          RegionConfig={
+          RunnerConfiguration={
             "us-east-2":{
               "ami":"0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
