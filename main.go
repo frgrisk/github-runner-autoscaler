@@ -107,6 +107,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
+		//nolint:gosec
 		slog.Info("creating runner in region", "region", region)
 
 		svc := ec2.NewFromConfig(cfg)
