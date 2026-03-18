@@ -92,6 +92,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			for i := range instanceTypes {
 				if label == string(instanceTypes[i]) {
 					instanceType = instanceTypes[i]
+
+					break
 				}
 			}
 		}
