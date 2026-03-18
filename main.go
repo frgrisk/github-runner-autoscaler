@@ -89,6 +89,9 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}
 
 		region := os.Getenv("AWS_DEFAULT_REGION")
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
 
 		instanceType := types.InstanceTypeC7aLarge
 		instanceTypes := instanceType.Values()
