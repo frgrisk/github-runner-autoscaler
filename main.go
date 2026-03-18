@@ -70,9 +70,18 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
+		runnerCfg := os.Getenv("RUNNER_CONFIGURATION")
+		if runnerCfg == "" {
+			slog.Error("RUNNER_CONFIGURATION env var not set")
+
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("runner configuration missing")
+		}
+
 		var runnerConfig map[string]RunnerConfiguration
 
-		err := json.Unmarshal([]byte(os.Getenv("RUNNER_CONFIGURATION")), &runnerConfig)
+		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
 		if err != nil {
 			return events.APIGatewayProxyResponse{
 				StatusCode: http.StatusInternalServerError,
