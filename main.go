@@ -79,7 +79,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}, errors.New("error unmarshaling runner configuration")
 		}
 
-		region := os.Getenv("AWS_REGION")
+		region := os.Getenv("AWS_DEFAULT_REGION")
 
 		instanceType := types.InstanceTypeC7aLarge
 		instanceTypes := instanceType.Values()
