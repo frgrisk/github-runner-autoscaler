@@ -9,7 +9,14 @@ INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.2
 # CloudWatch logging setup
 LOG_GROUP="/aws/ec2/github-runner"
 LOG_STREAM="runner-${INSTANCE_ID}-$(date +%Y%m%d-%H%M%S)"
+
+# Get region information
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+if [ -z "${REGION}" ]; then
+    echo "Failed to determine AWS region from instance metadata; REGION is empty." >&2
+    shutdown now
+    exit 1
+fi
 
 # Configure AWS CLI default region
 aws configure set default.region "${REGION}"
