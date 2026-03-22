@@ -10,20 +10,19 @@ GitHub Runner Autoscaler is a serverless AWS solution that automatically provisi
 
 ### Build
 ```bash
-make build
+sam build
 ```
-This compiles the Go Lambda function to a Linux ARM64 binary named `bootstrap`.
+This compiles the Go Lambda function to a Linux ARM64 binary named `bootstrap` via the `build-GitHubActionHookFunction` Makefile target.
 
 ### Deploy
 ```bash
-sam build
 sam deploy --config-env dev  # or prod
 ```
 
 ### Local Development
 To test changes locally before deployment:
 ```bash
-go build -o bootstrap main.go
+GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o bootstrap
 ```
 
 ## Architecture
