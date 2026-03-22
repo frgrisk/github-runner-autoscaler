@@ -22,7 +22,7 @@ sam deploy --config-env dev  # or prod
 ### Local Development
 To test changes locally before deployment:
 ```bash
-GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o bootstrap
+make build-GitHubActionHookFunction ARTIFACTS_DIR=.
 ```
 
 ## Architecture
