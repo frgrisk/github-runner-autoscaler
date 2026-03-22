@@ -13,6 +13,16 @@ Secrets Manager. Create the secret before deploying:
 aws secretsmanager create-secret --name my-github-pat --secret-string <PAT>
 ```
 
+### Rotating the PAT
+
+If your PAT expires or is revoked, update the secret in Secrets Manager:
+
+```bash
+aws secretsmanager put-secret-value --secret-id my-github-pat --secret-string <NEW_PAT>
+```
+
+No redeployment needed. The Lambda fetches the secret at runtime.
+
 ## Deployment
 
 Deploy the stack with SAM and provide the secret name, AMI, subnet, security groups and
