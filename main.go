@@ -74,12 +74,21 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if secretName == "" {
 			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("secret name missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"secret name missing",
+				)
 		}
 
-		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)})
+		secretOut, err := sm.GetSecretValue(
+			context.TODO(),
+			&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
+		)
 		if err != nil {
-			slog.Error("failed to get secret", "secret", secretName, "error", err.Error())
+			slog.Error( //nolint:gosec // G706: err is from AWS SDK
+				"failed to get secret", "secret", secretName, "error", err.Error(),
+			)
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
@@ -95,14 +104,22 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if subnetID == "" {
 			slog.Error("SUBNET_ID env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("subnet id missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"subnet id missing",
+				)
 		}
 
 		sgIDs := os.Getenv("SECURITY_GROUP_IDS")
 		if sgIDs == "" {
 			slog.Error("SECURITY_GROUP_IDS env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("security groups missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"security groups missing",
+				)
 		}
 
 		securityGroups := strings.Split(sgIDs, ",")
@@ -111,21 +128,33 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if keyName == "" {
 			slog.Error("KEY_NAME env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("key name missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"key name missing",
+				)
 		}
 
 		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
 		if instanceProfileArn == "" {
 			slog.Error("INSTANCE_PROFILE_ARN env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("instance profile arn missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"instance profile arn missing",
+				)
 		}
 
 		imageID := os.Getenv("IMAGE_ID")
 		if imageID == "" {
 			slog.Error("IMAGE_ID env var not set")
 
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, errors.New("image id missing")
+			return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"image id missing",
+				)
 		}
 
 		tags := []types.Tag{
@@ -167,7 +196,12 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}
 
 		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels}); err != nil {
+
+		err = tpl.Execute(
+			&buf,
+			map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels},
+		)
+		if err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
