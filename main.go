@@ -132,16 +132,20 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
 
 			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, errors.New("secret name missing")
+					StatusCode: http.StatusInternalServerError,
+				}, errors.New(
+					"secret name missing",
+				)
 		}
 
-		secretOut, err := sm.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{
-			SecretId: aws.String(secretName),
-		})
+		secretOut, err := sm.GetSecretValue(
+			context.TODO(),
+			&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
+		)
 		if err != nil {
-			//nolint:gosec
-			slog.Error("failed to get secret", "secret", secretName, "error", err.Error())
+			slog.Error( //nolint:gosec // G706: err is from AWS SDK
+				"failed to get secret", "secret", secretName, "error", err.Error(),
+			)
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
@@ -189,11 +193,12 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		var buf bytes.Buffer
 
-		err = tpl.Execute(&buf, map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels})
+		err = tpl.Execute(
+			&buf,
+			map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels},
+		)
 		if err != nil {
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, fmt.Errorf("failed to execute template: %w", err)
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
 		finalUserData := buf.String()

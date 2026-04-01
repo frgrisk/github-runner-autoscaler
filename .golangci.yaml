@@ -1,6 +1,8 @@
 version: "2"
 linters:
   default: all
+  enable:
+    - wsl_v5
   disable:
     - depguard
     - exhaustruct
@@ -13,6 +15,7 @@ linters:
     - cyclop
     - funlen
     - maintidx
+    - wsl
 formatters:
   # Enable specific formatter.
   # Default: [] (uses standard Go formatting)

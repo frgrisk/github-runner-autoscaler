@@ -29,3 +29,8 @@ bootstrap
 # Local SAM configuration (not committed)
 samconfig.toml
 samconfig.yaml
+
+# Claude Code: ignore local/user-specific files only
+.claude/*.local.*
+.claude/todos/
+.claude/worktrees/
