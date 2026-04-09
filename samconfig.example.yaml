@@ -13,13 +13,13 @@ dev:
         - >-
           RunnerConfiguration={
             "us-east-2":{
-              "ami":"0c0c88099397fccb4",
+              "ami":"ami-0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
               "sg":["sg-0123456789def"],
               "key":"terraform-2025051801"
             },
             "ap-southeast-5":{
-              "ami":"0c0c88099397fccb4",
+              "ami":"ami-0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
               "sg":["sg-0123456789def"],
               "key":"terraform-2025051801"
@@ -39,13 +39,13 @@ prod:
         - >-
           RunnerConfiguration={
             "us-east-2":{
-              "ami":"0c0c88099397fccb4",
+              "ami":"ami-0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
               "sg":["sg-0123456789def"],
               "key":"terraform-2025051801"
             },
             "ap-southeast-5":{
-              "ami":"0c0c88099397fccb4",
+              "ami":"ami-0c0c88099397fccb4",
               "subnet":"subnet-0123456789def",
               "sg":["sg-0123456789def"],
               "key":"terraform-2025051801"
