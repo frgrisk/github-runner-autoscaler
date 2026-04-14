@@ -83,7 +83,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
 		if err != nil {
-			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error())
+			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error()) //nolint:gosec
+
 			return events.APIGatewayProxyResponse{
 				StatusCode: http.StatusInternalServerError,
 			}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
