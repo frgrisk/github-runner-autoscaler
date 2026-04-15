@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,13 @@ import (
 
 //go:embed user-data.sh
 var userData string
+
+type RunnerConfiguration struct {
+	ImageID        string   `json:"ami"`
+	SubnetID       string   `json:"subnet"`
+	SecurityGroups []string `json:"sg"`
+	KeyName        string   `json:"key"`
+}
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	var githubEventHeader string
@@ -62,10 +70,61 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
-		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-2"))
+		runnerCfg := os.Getenv("RUNNER_CONFIGURATION")
+		if runnerCfg == "" {
+			slog.Error("RUNNER_CONFIGURATION env var not set")
+
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("runner configuration missing")
+		}
+
+		var runnerConfig map[string]RunnerConfiguration
+
+		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
+		if err != nil {
+			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error()) //nolint:gosec
+
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
+		}
+
+		region := os.Getenv("AWS_DEFAULT_REGION")
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+
+		instanceType := types.InstanceTypeC7aLarge
+		instanceTypes := instanceType.Values()
+
+		for _, label := range event.GetWorkflowJob().Labels {
+			if _, ok := runnerConfig[label]; ok {
+				region = label
+			}
+
+			for i := range instanceTypes {
+				if label == string(instanceTypes[i]) {
+					instanceType = instanceTypes[i]
+
+					break
+				}
+			}
+		}
+
+		regionCfg, ok := runnerConfig[region]
+		if !ok {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
+				fmt.Errorf("no config for region %s", region)
+		}
+
+		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 		if err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
+
+		//nolint:gosec
+		slog.Info("creating runner in region", "region", region)
 
 		svc := ec2.NewFromConfig(cfg)
 		sm := secretsmanager.NewFromConfig(cfg)
@@ -100,61 +159,13 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			extraLabels = "," + extraLabels
 		}
 
-		subnetID := os.Getenv("SUBNET_ID")
-		if subnetID == "" {
-			slog.Error("SUBNET_ID env var not set")
-
-			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"subnet id missing",
-				)
-		}
-
-		sgIDs := os.Getenv("SECURITY_GROUP_IDS")
-		if sgIDs == "" {
-			slog.Error("SECURITY_GROUP_IDS env var not set")
-
-			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"security groups missing",
-				)
-		}
-
-		securityGroups := strings.Split(sgIDs, ",")
-
-		keyName := os.Getenv("KEY_NAME")
-		if keyName == "" {
-			slog.Error("KEY_NAME env var not set")
-
-			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"key name missing",
-				)
-		}
-
 		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
 		if instanceProfileArn == "" {
 			slog.Error("INSTANCE_PROFILE_ARN env var not set")
 
 			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"instance profile arn missing",
-				)
-		}
-
-		imageID := os.Getenv("IMAGE_ID")
-		if imageID == "" {
-			slog.Error("IMAGE_ID env var not set")
-
-			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"image id missing",
-				)
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("instance profile arn missing")
 		}
 
 		tags := []types.Tag{
@@ -173,19 +184,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			slog.Info("not ephemeral")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
-		}
-
-		instanceType := types.InstanceTypeC7aLarge
-
-		instanceTypes := instanceType.Values()
-		for _, label := range event.GetWorkflowJob().Labels {
-			for i := range instanceTypes {
-				if label == string(instanceTypes[i]) {
-					instanceType = instanceTypes[i]
-
-					break
-				}
-			}
 		}
 
 		slog.Info("creating instance", "instanceType", instanceType)
@@ -213,7 +211,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				MinCount:                          aws.Int32(1),
 				MaxCount:                          aws.Int32(1),
 				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String(imageID),
+				ImageId:                           aws.String(regionCfg.ImageID),
 				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 				InstanceType:                      instanceType,
 				IamInstanceProfile: &types.IamInstanceProfileSpecification{
@@ -222,13 +220,13 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 					{
 						AssociatePublicIpAddress: aws.Bool(true),
-						SubnetId:                 aws.String(subnetID),
+						SubnetId:                 aws.String(regionCfg.SubnetID),
 						DeleteOnTermination:      aws.Bool(true),
 						DeviceIndex:              aws.Int32(0),
-						Groups:                   securityGroups,
+						Groups:                   regionCfg.SecurityGroups,
 					},
 				},
-				KeyName:    aws.String(keyName),
+				KeyName:    aws.String(regionCfg.KeyName),
 				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 				TagSpecifications: []types.TagSpecification{
 					{
@@ -245,6 +243,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			},
 		)
 		if err != nil {
+			//nolint:gosec
 			slog.Error(err.Error())
 
 			return events.APIGatewayProxyResponse{
@@ -262,6 +261,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}, nil
 		}
 
+		//nolint:gosec
 		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
 
 		return events.APIGatewayProxyResponse{

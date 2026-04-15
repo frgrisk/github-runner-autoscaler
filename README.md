@@ -32,10 +32,7 @@ EC2 key pair used for the runner. You may also specify additional runner labels:
 sam deploy \
   --parameter-overrides GitHubPATSecretName=my-github-pat \
   ExtraRunnerLabels="gpu" \
-  ImageId=ami-0123456789abcdef0 \
-  SubnetId=subnet-12345678 \
-  SecurityGroupIds=sg-12345678 \
-  KeyName=my-key
+  RunnerConfiguration='{\"us-east-2\":{\"ami\":\"0c0c88099397fccb4\",\"subnet\":\"subnet-0123456789def\",\"sg\":[\"sg-0123456789def\"],\"key\":\"terraform-2025051801\"},\"ap-southeast-5\":{\"ami\":\"0c0c88099397fccb4\",\"subnet\":\"subnet-0123456789def\",\"sg\":[\"sg-0123456789def\"],\"key\":\"terraform-2025051801\"}}'
 ```
 
 The `ExtraRunnerLabels` parameter is optional. When supplied, the labels are

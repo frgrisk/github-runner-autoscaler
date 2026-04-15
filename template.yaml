@@ -9,18 +9,9 @@ Parameters:
     Type: String
     Default: ""
     Description: Additional comma separated labels for the runner
-  ImageId:
+  RunnerConfiguration:
     Type: String
-    Description: AMI ID for the runner instances
-  SubnetId:
-    Type: String
-    Description: Subnet ID for the runner instances
-  SecurityGroupIds:
-    Type: String
-    Description: Comma separated security group IDs for the runner
-  KeyName:
-    Type: String
-    Description: EC2 key pair name for the runner
+    Description: JSON string defining per-region runner settings (AMI, subnet, security group, SSH key).
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
@@ -53,7 +44,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                   - logs:DescribeLogStreams
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
 
   RunnerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -81,10 +72,7 @@ Resources:
         Variables:
           GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
           EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
-          IMAGE_ID: !Ref ImageId
-          SUBNET_ID: !Ref SubnetId
-          SECURITY_GROUP_IDS: !Ref SecurityGroupIds
-          KEY_NAME: !Ref KeyName
+          RUNNER_CONFIGURATION: !Ref RunnerConfiguration
           INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
       Policies:
         - Statement:
@@ -100,7 +88,7 @@ Resources:
               Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
-              Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GitHubPATSecretName}*
+              Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:${GitHubPATSecretName}*
     Metadata:
       BuildMethod: makefile
 
