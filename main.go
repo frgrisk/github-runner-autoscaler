@@ -244,18 +244,25 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 					UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 				},
 			)
-
 			if err != nil {
 				var apiErr smithy.APIError
 				if errors.As(err, &apiErr) {
 					switch apiErr.ErrorCode() {
 					case "InsufficientFreeAddressesInSubnet", "InsufficientInstanceCapacity":
-						slog.Warn("retrying in next subnet", "subnet", subnet, "reason", apiErr.ErrorCode())
+						slog.Warn(
+							"retrying in next subnet",
+							"subnet",
+							subnet,
+							"reason",
+							apiErr.ErrorCode(),
+						)
+
 						continue
 					}
 				}
 
-				slog.Error(err.Error())
+				slog.Error(err.Error()) //nolint:gosec
+
 				return events.APIGatewayProxyResponse{
 					Body:       err.Error(),
 					StatusCode: http.StatusInternalServerError,
@@ -263,11 +270,20 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}
 
 			if len(output.Instances) == 0 {
-				slog.Warn("no instance created in subnet, trying next", "subnet", subnet)
+				slog.Warn(
+					"no instance created in subnet, trying next",
+					"subnet",
+					subnet,
+				)
+
 				continue
 			}
 
-			slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
+			//nolint:gosec
+			slog.Info("instance created",
+				"instanceID",
+				output.Instances[0].InstanceId,
+			)
 
 			return events.APIGatewayProxyResponse{
 				Body:       *output.Instances[0].InstanceId,
@@ -280,7 +296,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		return events.APIGatewayProxyResponse{
 			Body:       "failed to launch instance in any subnet",
 			StatusCode: http.StatusInternalServerError,
-		}, fmt.Errorf("failed to launch instance in any subnet")
+		}, errors.New("failed to launch instance in any subnet")
 
 	default:
 		err = fmt.Errorf("unknown event type %T", event)
