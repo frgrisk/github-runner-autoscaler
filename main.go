@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/smithy-go"
 	"github.com/google/go-github/v60/github"
 )
 
@@ -31,7 +32,7 @@ var userData string
 
 type RunnerConfiguration struct {
 	ImageID        string   `json:"ami"`
-	SubnetID       string   `json:"subnet"`
+	SubnetID       []string `json:"subnet"`
 	SecurityGroups []string `json:"sg"`
 	KeyName        string   `json:"key"`
 }
@@ -205,69 +206,81 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		finalUserData := buf.String()
 
-		output, err := svc.RunInstances(
-			context.TODO(),
-			&ec2.RunInstancesInput{
-				MinCount:                          aws.Int32(1),
-				MaxCount:                          aws.Int32(1),
-				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String(regionCfg.ImageID),
-				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
-				InstanceType:                      instanceType,
-				IamInstanceProfile: &types.IamInstanceProfileSpecification{
-					Arn: aws.String(instanceProfileArn),
-				},
-				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-					{
-						AssociatePublicIpAddress: aws.Bool(true),
-						SubnetId:                 aws.String(regionCfg.SubnetID),
-						DeleteOnTermination:      aws.Bool(true),
-						DeviceIndex:              aws.Int32(0),
-						Groups:                   regionCfg.SecurityGroups,
+		for _, subnet := range regionCfg.SubnetID {
+			output, err := svc.RunInstances(
+				context.TODO(),
+				&ec2.RunInstancesInput{
+					MinCount:                          aws.Int32(1),
+					MaxCount:                          aws.Int32(1),
+					EbsOptimized:                      aws.Bool(true),
+					ImageId:                           aws.String(regionCfg.ImageID),
+					InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
+					InstanceType:                      instanceType,
+					IamInstanceProfile: &types.IamInstanceProfileSpecification{
+						Arn: aws.String(instanceProfileArn),
 					},
-				},
-				KeyName:    aws.String(regionCfg.KeyName),
-				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
-				TagSpecifications: []types.TagSpecification{
-					{
-						ResourceType: types.ResourceTypeInstance,
-						Tags:         tags,
+					NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
+						{
+							AssociatePublicIpAddress: aws.Bool(true),
+							SubnetId:                 aws.String(subnet),
+							DeleteOnTermination:      aws.Bool(true),
+							DeviceIndex:              aws.Int32(0),
+							Groups:                   regionCfg.SecurityGroups,
+						},
 					},
-					{
-						ResourceType: types.ResourceTypeVolume,
-						Tags:         tags,
+					KeyName:    aws.String(regionCfg.KeyName),
+					Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+					TagSpecifications: []types.TagSpecification{
+						{
+							ResourceType: types.ResourceTypeInstance,
+							Tags:         tags,
+						},
+						{
+							ResourceType: types.ResourceTypeVolume,
+							Tags:         tags,
+						},
 					},
+					// base64 encode user data
+					UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 				},
-				// base64 encode user data
-				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
-			},
-		)
-		if err != nil {
-			//nolint:gosec
-			slog.Error(err.Error())
+			)
+
+			if err != nil {
+				var apiErr smithy.APIError
+				if errors.As(err, &apiErr) {
+					switch apiErr.ErrorCode() {
+					case "InsufficientFreeAddressesInSubnet", "InsufficientInstanceCapacity":
+						slog.Warn("retrying in next subnet", "subnet", subnet, "reason", apiErr.ErrorCode())
+						continue
+					}
+				}
+
+				slog.Error(err.Error())
+				return events.APIGatewayProxyResponse{
+					Body:       err.Error(),
+					StatusCode: http.StatusInternalServerError,
+				}, err
+			}
+
+			if len(output.Instances) == 0 {
+				slog.Warn("no instance created in subnet, trying next", "subnet", subnet)
+				continue
+			}
+
+			slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
 
 			return events.APIGatewayProxyResponse{
-				Body:       err.Error(),
-				StatusCode: http.StatusInternalServerError,
-			}, err
-		}
-
-		if len(output.Instances) == 0 {
-			slog.Error("no instance created")
-
-			return events.APIGatewayProxyResponse{
-				Body:       "no instance created",
-				StatusCode: http.StatusInternalServerError,
+				Body:       *output.Instances[0].InstanceId,
+				StatusCode: http.StatusOK,
 			}, nil
 		}
 
-		//nolint:gosec
-		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
+		slog.Error("failed to launch instance in any subnet")
 
 		return events.APIGatewayProxyResponse{
-			Body:       *output.Instances[0].InstanceId,
-			StatusCode: http.StatusOK,
-		}, nil
+			Body:       "failed to launch instance in any subnet",
+			StatusCode: http.StatusInternalServerError,
+		}, fmt.Errorf("failed to launch instance in any subnet")
 
 	default:
 		err = fmt.Errorf("unknown event type %T", event)
