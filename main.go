@@ -84,7 +84,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
 		if err != nil {
-			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error()) //nolint:gosec
+			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error())
 
 			return events.APIGatewayProxyResponse{
 				StatusCode: http.StatusInternalServerError,
@@ -124,7 +124,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
-		//nolint:gosec
 		slog.Info("creating runner in region", "region", region)
 
 		svc := ec2.NewFromConfig(cfg)
@@ -146,7 +145,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
 		)
 		if err != nil {
-			slog.Error( //nolint:gosec // G706: err is from AWS SDK
+			slog.Error(
 				"failed to get secret", "secret", secretName, "error", err.Error(),
 			)
 
@@ -279,7 +278,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				continue
 			}
 
-			//nolint:gosec
 			slog.Info("instance created",
 				"instanceID",
 				output.Instances[0].InstanceId,
