@@ -2,6 +2,7 @@ package main //nolint: revive
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	_ "embed"
 	"encoding/base64"
@@ -23,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/smithy-go"
 	"github.com/google/go-github/v60/github"
 )
 
@@ -31,9 +33,18 @@ var userData string
 
 type RunnerConfiguration struct {
 	ImageID        string   `json:"ami"`
-	SubnetID       string   `json:"subnet"`
+	SubnetID       []string `json:"subnet"`
 	SecurityGroups []string `json:"sg"`
 	KeyName        string   `json:"key"`
+}
+
+// retryableLaunchErrors are EC2 error codes for which launching the runner in
+// the next configured subnet (potentially a different AZ) may succeed.
+var retryableLaunchErrors = []string{
+	"InsufficientFreeAddressesInSubnet",
+	"InsufficientInstanceCapacity",
+	"InvalidSubnetID.NotFound",
+	"Unsupported",
 }
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -83,17 +94,14 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
 		if err != nil {
-			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error()) //nolint:gosec
+			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error())
 
 			return events.APIGatewayProxyResponse{
 				StatusCode: http.StatusInternalServerError,
 			}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
 		}
 
-		region := os.Getenv("AWS_DEFAULT_REGION")
-		if region == "" {
-			region = os.Getenv("AWS_REGION")
-		}
+		region := cmp.Or(os.Getenv("AWS_DEFAULT_REGION"), os.Getenv("AWS_REGION"))
 
 		instanceType := types.InstanceTypeC7aLarge
 		instanceTypes := instanceType.Values()
@@ -103,12 +111,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				region = label
 			}
 
-			for i := range instanceTypes {
-				if label == string(instanceTypes[i]) {
-					instanceType = instanceTypes[i]
-
-					break
-				}
+			if slices.Contains(instanceTypes, types.InstanceType(label)) {
+				instanceType = types.InstanceType(label)
 			}
 		}
 
@@ -118,12 +122,16 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				fmt.Errorf("no config for region %s", region)
 		}
 
+		if len(regionCfg.SubnetID) == 0 {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
+				fmt.Errorf("no subnets configured for region %s", region)
+		}
+
 		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 		if err != nil {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
 		}
 
-		//nolint:gosec
 		slog.Info("creating runner in region", "region", region)
 
 		svc := ec2.NewFromConfig(cfg)
@@ -145,7 +153,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
 		)
 		if err != nil {
-			slog.Error( //nolint:gosec // G706: err is from AWS SDK
+			slog.Error(
 				"failed to get secret", "secret", secretName, "error", err.Error(),
 			)
 
@@ -205,69 +213,101 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		finalUserData := buf.String()
 
-		output, err := svc.RunInstances(
-			context.TODO(),
-			&ec2.RunInstancesInput{
-				MinCount:                          aws.Int32(1),
-				MaxCount:                          aws.Int32(1),
-				EbsOptimized:                      aws.Bool(true),
-				ImageId:                           aws.String(regionCfg.ImageID),
-				InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
-				InstanceType:                      instanceType,
-				IamInstanceProfile: &types.IamInstanceProfileSpecification{
-					Arn: aws.String(instanceProfileArn),
-				},
-				NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-					{
-						AssociatePublicIpAddress: aws.Bool(true),
-						SubnetId:                 aws.String(regionCfg.SubnetID),
-						DeleteOnTermination:      aws.Bool(true),
-						DeviceIndex:              aws.Int32(0),
-						Groups:                   regionCfg.SecurityGroups,
-					},
-				},
-				KeyName:    aws.String(regionCfg.KeyName),
-				Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
-				TagSpecifications: []types.TagSpecification{
-					{
-						ResourceType: types.ResourceTypeInstance,
-						Tags:         tags,
-					},
-					{
-						ResourceType: types.ResourceTypeVolume,
-						Tags:         tags,
-					},
-				},
-				// base64 encode user data
-				UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+		runInput := &ec2.RunInstancesInput{
+			MinCount:                          aws.Int32(1),
+			MaxCount:                          aws.Int32(1),
+			EbsOptimized:                      aws.Bool(true),
+			ImageId:                           aws.String(regionCfg.ImageID),
+			InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
+			InstanceType:                      instanceType,
+			IamInstanceProfile: &types.IamInstanceProfileSpecification{
+				Arn: aws.String(instanceProfileArn),
 			},
-		)
-		if err != nil {
-			//nolint:gosec
-			slog.Error(err.Error())
-
-			return events.APIGatewayProxyResponse{
-				Body:       err.Error(),
-				StatusCode: http.StatusInternalServerError,
-			}, err
+			NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
+				{
+					AssociatePublicIpAddress: aws.Bool(true),
+					DeleteOnTermination:      aws.Bool(true),
+					DeviceIndex:              aws.Int32(0),
+					Groups:                   regionCfg.SecurityGroups,
+				},
+			},
+			KeyName:    aws.String(regionCfg.KeyName),
+			Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+			TagSpecifications: []types.TagSpecification{
+				{
+					ResourceType: types.ResourceTypeInstance,
+					Tags:         tags,
+				},
+				{
+					ResourceType: types.ResourceTypeVolume,
+					Tags:         tags,
+				},
+			},
+			// base64 encode user data
+			UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 		}
 
-		if len(output.Instances) == 0 {
-			slog.Error("no instance created")
+		var lastErr error
+
+		for _, subnet := range regionCfg.SubnetID {
+			runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
+
+			output, err := svc.RunInstances(context.TODO(), runInput)
+			if err != nil {
+				apiErr, ok := errors.AsType[smithy.APIError](err)
+				if ok && slices.Contains(retryableLaunchErrors, apiErr.ErrorCode()) {
+					slog.Warn(
+						"retrying in next subnet",
+						"subnet",
+						subnet,
+						"reason",
+						apiErr.ErrorCode(),
+					)
+
+					lastErr = err
+
+					continue
+				}
+
+				slog.Error("failed to run instances", "error", err.Error())
+
+				return events.APIGatewayProxyResponse{
+					Body:       err.Error(),
+					StatusCode: http.StatusInternalServerError,
+				}, err
+			}
+
+			if len(output.Instances) == 0 || output.Instances[0].InstanceId == nil {
+				slog.Warn(
+					"no instance created in subnet, trying next",
+					"subnet",
+					subnet,
+				)
+
+				lastErr = errors.New("run instances returned no instance id")
+
+				continue
+			}
+
+			instanceID := aws.ToString(output.Instances[0].InstanceId)
+			slog.Info("instance created", "instanceID", instanceID)
 
 			return events.APIGatewayProxyResponse{
-				Body:       "no instance created",
-				StatusCode: http.StatusInternalServerError,
+				Body:       instanceID,
+				StatusCode: http.StatusOK,
 			}, nil
 		}
 
-		//nolint:gosec
-		slog.Info("instance created", "instanceID", output.Instances[0].InstanceId)
+		if lastErr == nil {
+			lastErr = errors.New("failed to launch instance in any subnet")
+		}
+
+		slog.Error("failed to launch instance in any subnet", "error", lastErr.Error())
 
 		return events.APIGatewayProxyResponse{
-			Body:       *output.Instances[0].InstanceId,
-			StatusCode: http.StatusOK,
-		}, nil
+			Body:       lastErr.Error(),
+			StatusCode: http.StatusInternalServerError,
+		}, lastErr
 
 	default:
 		err = fmt.Errorf("unknown event type %T", event)

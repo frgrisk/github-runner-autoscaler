@@ -11,12 +11,13 @@ Parameters:
     Description: Additional comma separated labels for the runner
   RunnerConfiguration:
     Type: String
-    Description: JSON string defining per-region runner settings (AMI, subnet, security group, SSH key).
+    Description: JSON string defining per-region runner settings (AMI, subnets array, security groups, SSH key).
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 5
+    # Capped at 29s to match the API Gateway REST integration timeout.
+    Timeout: 29
     MemorySize: 128
 
 Resources:
