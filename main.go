@@ -2,6 +2,7 @@ package main //nolint: revive
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	_ "embed"
 	"encoding/base64"
@@ -35,6 +36,13 @@ type RunnerConfiguration struct {
 	SubnetID       []string `json:"subnet"`
 	SecurityGroups []string `json:"sg"`
 	KeyName        string   `json:"key"`
+}
+
+// retryableLaunchErrors are EC2 error codes for which launching the runner in
+// the next configured subnet may succeed.
+var retryableLaunchErrors = []string{
+	"InsufficientFreeAddressesInSubnet",
+	"InsufficientInstanceCapacity",
 }
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -91,10 +99,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
 		}
 
-		region := os.Getenv("AWS_DEFAULT_REGION")
-		if region == "" {
-			region = os.Getenv("AWS_REGION")
-		}
+		region := cmp.Or(os.Getenv("AWS_DEFAULT_REGION"), os.Getenv("AWS_REGION"))
 
 		instanceType := types.InstanceTypeC7aLarge
 		instanceTypes := instanceType.Values()
@@ -104,12 +109,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				region = label
 			}
 
-			for i := range instanceTypes {
-				if label == string(instanceTypes[i]) {
-					instanceType = instanceTypes[i]
-
-					break
-				}
+			if slices.Contains(instanceTypes, types.InstanceType(label)) {
+				instanceType = types.InstanceType(label)
 			}
 		}
 
@@ -205,62 +206,59 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 
 		finalUserData := buf.String()
 
-		for _, subnet := range regionCfg.SubnetID {
-			output, err := svc.RunInstances(
-				context.TODO(),
-				&ec2.RunInstancesInput{
-					MinCount:                          aws.Int32(1),
-					MaxCount:                          aws.Int32(1),
-					EbsOptimized:                      aws.Bool(true),
-					ImageId:                           aws.String(regionCfg.ImageID),
-					InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
-					InstanceType:                      instanceType,
-					IamInstanceProfile: &types.IamInstanceProfileSpecification{
-						Arn: aws.String(instanceProfileArn),
-					},
-					NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-						{
-							AssociatePublicIpAddress: aws.Bool(true),
-							SubnetId:                 aws.String(subnet),
-							DeleteOnTermination:      aws.Bool(true),
-							DeviceIndex:              aws.Int32(0),
-							Groups:                   regionCfg.SecurityGroups,
-						},
-					},
-					KeyName:    aws.String(regionCfg.KeyName),
-					Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
-					TagSpecifications: []types.TagSpecification{
-						{
-							ResourceType: types.ResourceTypeInstance,
-							Tags:         tags,
-						},
-						{
-							ResourceType: types.ResourceTypeVolume,
-							Tags:         tags,
-						},
-					},
-					// base64 encode user data
-					UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+		runInput := &ec2.RunInstancesInput{
+			MinCount:                          aws.Int32(1),
+			MaxCount:                          aws.Int32(1),
+			EbsOptimized:                      aws.Bool(true),
+			ImageId:                           aws.String(regionCfg.ImageID),
+			InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
+			InstanceType:                      instanceType,
+			IamInstanceProfile: &types.IamInstanceProfileSpecification{
+				Arn: aws.String(instanceProfileArn),
+			},
+			NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
+				{
+					AssociatePublicIpAddress: aws.Bool(true),
+					DeleteOnTermination:      aws.Bool(true),
+					DeviceIndex:              aws.Int32(0),
+					Groups:                   regionCfg.SecurityGroups,
 				},
-			)
-			if err != nil {
-				var apiErr smithy.APIError
-				if errors.As(err, &apiErr) {
-					switch apiErr.ErrorCode() {
-					case "InsufficientFreeAddressesInSubnet", "InsufficientInstanceCapacity":
-						slog.Warn(
-							"retrying in next subnet",
-							"subnet",
-							subnet,
-							"reason",
-							apiErr.ErrorCode(),
-						)
+			},
+			KeyName:    aws.String(regionCfg.KeyName),
+			Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+			TagSpecifications: []types.TagSpecification{
+				{
+					ResourceType: types.ResourceTypeInstance,
+					Tags:         tags,
+				},
+				{
+					ResourceType: types.ResourceTypeVolume,
+					Tags:         tags,
+				},
+			},
+			// base64 encode user data
+			UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+		}
 
-						continue
-					}
+		for _, subnet := range regionCfg.SubnetID {
+			runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
+
+			output, err := svc.RunInstances(context.TODO(), runInput)
+			if err != nil {
+				apiErr, ok := errors.AsType[smithy.APIError](err)
+				if ok && slices.Contains(retryableLaunchErrors, apiErr.ErrorCode()) {
+					slog.Warn(
+						"retrying in next subnet",
+						"subnet",
+						subnet,
+						"reason",
+						apiErr.ErrorCode(),
+					)
+
+					continue
 				}
 
-				slog.Error(err.Error()) //nolint:gosec
+				slog.Error("failed to run instances", "error", err.Error())
 
 				return events.APIGatewayProxyResponse{
 					Body:       err.Error(),

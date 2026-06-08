@@ -1,6 +1,6 @@
 module github.com/frgrisk/github-runner-autoscaler
 
-go 1.23
+go 1.26
 
 require (
 	github.com/aws/aws-lambda-go v1.51.1
@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.6
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.279.0
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.0
+	github.com/aws/smithy-go v1.24.0
 	github.com/google/go-github/v60 v60.0.0
 )
 
@@ -23,6 +24,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.5 // indirect
-	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 )

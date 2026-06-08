@@ -2,12 +2,14 @@ version: "2"
 linters:
   default: all
   enable:
+    - gomodguard_v2
     - wsl_v5
   disable:
     - depguard
     - exhaustruct
     - gochecknoglobals
     - gocognit
+    - gomodguard
     - wrapcheck
     - varnamelen
     - err113
