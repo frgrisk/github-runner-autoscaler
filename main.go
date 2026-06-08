@@ -39,10 +39,12 @@ type RunnerConfiguration struct {
 }
 
 // retryableLaunchErrors are EC2 error codes for which launching the runner in
-// the next configured subnet may succeed.
+// the next configured subnet (potentially a different AZ) may succeed.
 var retryableLaunchErrors = []string{
 	"InsufficientFreeAddressesInSubnet",
 	"InsufficientInstanceCapacity",
+	"InvalidSubnetID.NotFound",
+	"Unsupported",
 }
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -118,6 +120,11 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if !ok {
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
 				fmt.Errorf("no config for region %s", region)
+		}
+
+		if len(regionCfg.SubnetID) == 0 {
+			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
+				fmt.Errorf("no subnets configured for region %s", region)
 		}
 
 		cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
@@ -240,6 +247,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 		}
 
+		var lastErr error
+
 		for _, subnet := range regionCfg.SubnetID {
 			runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
 
@@ -255,6 +264,8 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 						apiErr.ErrorCode(),
 					)
 
+					lastErr = err
+
 					continue
 				}
 
@@ -266,33 +277,37 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 				}, err
 			}
 
-			if len(output.Instances) == 0 {
+			if len(output.Instances) == 0 || output.Instances[0].InstanceId == nil {
 				slog.Warn(
 					"no instance created in subnet, trying next",
 					"subnet",
 					subnet,
 				)
 
+				lastErr = errors.New("run instances returned no instance id")
+
 				continue
 			}
 
-			slog.Info("instance created",
-				"instanceID",
-				output.Instances[0].InstanceId,
-			)
+			instanceID := aws.ToString(output.Instances[0].InstanceId)
+			slog.Info("instance created", "instanceID", instanceID)
 
 			return events.APIGatewayProxyResponse{
-				Body:       *output.Instances[0].InstanceId,
+				Body:       instanceID,
 				StatusCode: http.StatusOK,
 			}, nil
 		}
 
-		slog.Error("failed to launch instance in any subnet")
+		if lastErr == nil {
+			lastErr = errors.New("failed to launch instance in any subnet")
+		}
+
+		slog.Error("failed to launch instance in any subnet", "error", lastErr.Error())
 
 		return events.APIGatewayProxyResponse{
-			Body:       "failed to launch instance in any subnet",
+			Body:       lastErr.Error(),
 			StatusCode: http.StatusInternalServerError,
-		}, errors.New("failed to launch instance in any subnet")
+		}, lastErr
 
 	default:
 		err = fmt.Errorf("unknown event type %T", event)
