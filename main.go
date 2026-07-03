@@ -70,6 +70,10 @@ const (
 	// one or two attempts. At 1s/2s/4s (then capped) with jitter, the window
 	// fits roughly five or six full subnet passes before ctx is cancelled.
 	maxLaunchBackoff = 4 * time.Second
+	// maxBackoffShift bounds the left shift used for exponential growth. Beyond
+	// this the backoff is already pinned at maxLaunchBackoff, so shifting further
+	// is pointless and would eventually overflow the underlying int64.
+	maxBackoffShift = 5
 )
 
 // launchBackoff returns the wait before the given retry pass (0-indexed) using
@@ -78,16 +82,15 @@ const (
 // and re-trigger the rate limit.
 func launchBackoff(attempt int) time.Duration {
 	backoff := maxLaunchBackoff
-	if attempt < 5 {
-		backoff = baseLaunchBackoff << attempt
-		if backoff > maxLaunchBackoff {
-			backoff = maxLaunchBackoff
-		}
+	if attempt < maxBackoffShift {
+		backoff = min(baseLaunchBackoff<<attempt, maxLaunchBackoff)
 	}
 
-	half := backoff / 2
+	half := backoff / 2 //nolint:mnd // equal-jitter halving
 
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	jitter := rand.Int64N(int64(half) + 1) //nolint:gosec
+
+	return half + time.Duration(jitter)
 }
 
 // launchInstance repeatedly attempts to launch a runner across the configured
@@ -266,7 +269,12 @@ func handler(
 				region = label
 			}
 
-			if candidate := types.InstanceType(label); slices.Contains(validInstanceTypes, candidate) &&
+			if candidate := types.InstanceType(
+				label,
+			); slices.Contains(
+				validInstanceTypes,
+				candidate,
+			) &&
 				!slices.Contains(instanceTypes, candidate) {
 				instanceTypes = append(instanceTypes, candidate)
 			}
