@@ -39,12 +39,12 @@ type RunnerConfiguration struct {
 	KeyName        string   `json:"key"`
 }
 
-// retryableLaunchErrors are EC2 error codes for which launching the runner in
+// launchCycleErrorCodes are EC2 error codes for which launching the runner in
 // the next configured subnet (potentially a different AZ) or the next candidate
 // instance type may succeed. launchInstance handles these itself by cycling to
-// the next subnet/type, so newEC2Retryer also marks them non-retryable on the
-// client (see there for why).
-var retryableLaunchErrors = []string{
+// the next subnet/type, so excludeLaunchCycleErrors also marks them
+// non-retryable on the client (see there for why).
+var launchCycleErrorCodes = []string{
 	"InsufficientFreeAddressesInSubnet",
 	"InsufficientInstanceCapacity",
 	"InvalidSubnetID.NotFound",
@@ -57,24 +57,23 @@ var retryableLaunchErrors = []string{
 func isLaunchCycleError(err error) bool {
 	apiErr, ok := errors.AsType[smithy.APIError](err)
 
-	return ok && slices.Contains(retryableLaunchErrors, apiErr.ErrorCode())
+	return ok && slices.Contains(launchCycleErrorCodes, apiErr.ErrorCode())
 }
 
-// noRetryCycleErrors excludes retryableLaunchErrors from the SDK retryer.
+// excludeLaunchCycleErrors keeps the SDK retryer from retrying the errors that
+// launchInstance handles by cycling to the next subnet/instance type.
 // InsufficientInstanceCapacity is an HTTP 500, so the default retryer would
 // otherwise burn its own attempts (with backoff) retrying the same subnet before
 // launchInstance ever gets to try the next one. Returning FalseTernary here
-// short-circuits that so the error surfaces immediately. Throttling and other
+// short-circuits that so the error surfaces immediately; throttling and other
 // transient errors fall through to UnknownTernary and keep default retry.
-type noRetryCycleErrors struct{}
-
-func (noRetryCycleErrors) IsErrorRetryable(err error) aws.Ternary {
+var excludeLaunchCycleErrors = retry.IsErrorRetryableFunc(func(err error) aws.Ternary {
 	if isLaunchCycleError(err) {
 		return aws.FalseTernary
 	}
 
 	return aws.UnknownTernary
-}
+})
 
 // newEC2Retryer returns the SDK's standard retryer (throttle + transient backoff
 // left at defaults) with cycle errors excluded so launchInstance can move to the
@@ -82,7 +81,7 @@ func (noRetryCycleErrors) IsErrorRetryable(err error) aws.Ternary {
 func newEC2Retryer() *retry.Standard {
 	return retry.NewStandard(func(o *retry.StandardOptions) {
 		o.Retryables = append(
-			[]retry.IsErrorRetryable{noRetryCycleErrors{}},
+			[]retry.IsErrorRetryable{excludeLaunchCycleErrors},
 			retry.DefaultRetryables...,
 		)
 	})
