@@ -10,18 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -42,7 +41,9 @@ type RunnerConfiguration struct {
 
 // retryableLaunchErrors are EC2 error codes for which launching the runner in
 // the next configured subnet (potentially a different AZ) or the next candidate
-// instance type may succeed.
+// instance type may succeed. launchInstance handles these itself by cycling to
+// the next subnet/type, so newEC2Retryer also marks them non-retryable on the
+// client (see there for why).
 var retryableLaunchErrors = []string{
 	"InsufficientFreeAddressesInSubnet",
 	"InsufficientInstanceCapacity",
@@ -50,57 +51,51 @@ var retryableLaunchErrors = []string{
 	"Unsupported",
 }
 
-// throttlingErrorCodes are EC2 error codes indicating the account is being rate
-// limited. Trying a different subnet does not help because the limit is
-// account-wide, so the launch loop backs off before trying again.
-var throttlingErrorCodes = []string{
-	"RequestLimitExceeded",
-	"Throttling",
-	"ThrottlingException",
-	"RequestThrottled",
+// isLaunchCycleError reports whether err is one launchInstance handles by moving
+// on to the next subnet/instance type, rather than a fatal error or a throttle
+// the SDK's retryer already backed off and retried.
+func isLaunchCycleError(err error) bool {
+	apiErr, ok := errors.AsType[smithy.APIError](err)
+
+	return ok && slices.Contains(retryableLaunchErrors, apiErr.ErrorCode())
 }
 
-const (
-	// baseLaunchBackoff is the initial wait before retrying a full pass over
-	// all subnets after they have all failed with a retryable/throttling error.
-	baseLaunchBackoff = 1 * time.Second
-	// maxLaunchBackoff caps the exponential backoff between retry passes. The
-	// Lambda is bounded by a 29s API Gateway timeout, so the cap is deliberately
-	// small: a large cap would spend most of the window asleep and get in only
-	// one or two attempts. At 1s/2s/4s (then capped) with jitter, the window
-	// fits roughly five or six full subnet passes before ctx is cancelled.
-	maxLaunchBackoff = 4 * time.Second
-	// maxBackoffShift bounds the left shift used for exponential growth. Beyond
-	// this the backoff is already pinned at maxLaunchBackoff, so shifting further
-	// is pointless and would eventually overflow the underlying int64.
-	maxBackoffShift = 5
-)
+// noRetryCycleErrors excludes retryableLaunchErrors from the SDK retryer.
+// InsufficientInstanceCapacity is an HTTP 500, so the default retryer would
+// otherwise burn its own attempts (with backoff) retrying the same subnet before
+// launchInstance ever gets to try the next one. Returning FalseTernary here
+// short-circuits that so the error surfaces immediately. Throttling and other
+// transient errors fall through to UnknownTernary and keep default retry.
+type noRetryCycleErrors struct{}
 
-// launchBackoff returns the wait before the given retry pass (0-indexed) using
-// exponential backoff with equal jitter. The jitter spreads retries out so many
-// concurrently throttled Lambda invocations do not all retry at the same instant
-// and re-trigger the rate limit.
-func launchBackoff(attempt int) time.Duration {
-	backoff := maxLaunchBackoff
-	if attempt < maxBackoffShift {
-		backoff = min(baseLaunchBackoff<<attempt, maxLaunchBackoff)
+func (noRetryCycleErrors) IsErrorRetryable(err error) aws.Ternary {
+	if isLaunchCycleError(err) {
+		return aws.FalseTernary
 	}
 
-	half := backoff / 2 //nolint:mnd // equal-jitter halving
-
-	jitter := rand.Int64N(int64(half) + 1) //nolint:gosec
-
-	return half + time.Duration(jitter)
+	return aws.UnknownTernary
 }
 
-// launchInstance repeatedly attempts to launch a runner across the configured
-// instance types and subnets. It tries each instance type in turn, and for each
-// type sweeps every subnet; capacity/subnet errors move on to the next subnet
-// (then the next type), so a type that is out of capacity in every AZ falls
-// through to the next candidate. Account-wide throttling stops the current pass
-// early. After a full pass with no success it backs off (with jitter) and tries
-// again, looping until an instance is launched, a non-retryable error occurs, or
-// ctx is cancelled (which happens when the Lambda invocation nears its timeout).
+// newEC2Retryer returns the SDK's standard retryer (throttle + transient backoff
+// left at defaults) with cycle errors excluded so launchInstance can move to the
+// next subnet/type without waiting on same-call retries.
+func newEC2Retryer() *retry.Standard {
+	return retry.NewStandard(func(o *retry.StandardOptions) {
+		o.Retryables = append(
+			[]retry.IsErrorRetryable{noRetryCycleErrors{}},
+			retry.DefaultRetryables...,
+		)
+	})
+}
+
+// launchInstance attempts to launch a runner across the candidate instance types
+// and subnets. It tries each instance type in turn, sweeping every subnet; a
+// capacity or subnet error (see retryableLaunchErrors) moves straight on to the
+// next subnet, then the next type, so a type that is out of capacity in every AZ
+// falls through to the next candidate. Throttling and other transient errors are
+// backed off and retried by the EC2 client's own retryer before they reach here,
+// so any error that is not a cycle error is treated as fatal. It returns the
+// launched instance ID, or an error if no type/subnet combination succeeds.
 func launchInstance(
 	ctx context.Context,
 	svc *ec2.Client,
@@ -110,92 +105,58 @@ func launchInstance(
 ) (string, error) {
 	var lastErr error
 
-	for attempt := 0; ; attempt++ {
-	typeLoop:
-		for _, instanceType := range instanceTypes {
-			runInput.InstanceType = instanceType
+	for _, instanceType := range instanceTypes {
+		runInput.InstanceType = instanceType
 
-			for _, subnet := range subnets {
-				runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
+		for _, subnet := range subnets {
+			runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
 
-				output, err := svc.RunInstances(ctx, runInput)
-				if err != nil {
-					apiErr, ok := errors.AsType[smithy.APIError](err)
+			output, err := svc.RunInstances(ctx, runInput)
+			if err != nil {
+				if !isLaunchCycleError(err) {
+					slog.Error("failed to run instances", "error", err.Error())
 
-					switch {
-					case ok && slices.Contains(throttlingErrorCodes, apiErr.ErrorCode()):
-						slog.Warn(
-							"throttled launching instance, backing off before retry",
-							"instanceType", instanceType,
-							"subnet", subnet,
-							"reason", apiErr.ErrorCode(),
-						)
-
-						lastErr = err
-
-						// Account-wide limit: stop trying other subnets and
-						// instance types this pass and go straight to backoff.
-						break typeLoop
-					case ok && slices.Contains(retryableLaunchErrors, apiErr.ErrorCode()):
-						slog.Warn(
-							"retrying in next subnet",
-							"instanceType", instanceType,
-							"subnet", subnet,
-							"reason", apiErr.ErrorCode(),
-						)
-
-						lastErr = err
-
-						continue
-					default:
-						slog.Error("failed to run instances", "error", err.Error())
-
-						return "", err
-					}
+					return "", err
 				}
 
-				if len(output.Instances) == 0 || output.Instances[0].InstanceId == nil {
-					slog.Warn(
-						"no instance created in subnet, trying next",
-						"instanceType", instanceType,
-						"subnet", subnet,
-					)
+				slog.Warn(
+					"capacity/subnet error, trying next",
+					"instanceType", instanceType,
+					"subnet", subnet,
+					"error", err.Error(),
+				)
 
-					lastErr = errors.New("run instances returned no instance id")
+				lastErr = err
 
-					continue
-				}
-
-				return aws.ToString(output.Instances[0].InstanceId), nil
+				continue
 			}
 
-			slog.Warn(
-				"all subnets failed for instance type, trying next type",
-				"instanceType", instanceType,
-			)
+			if len(output.Instances) == 0 || output.Instances[0].InstanceId == nil {
+				slog.Warn(
+					"no instance created in subnet, trying next",
+					"instanceType", instanceType,
+					"subnet", subnet,
+				)
+
+				lastErr = errors.New("run instances returned no instance id")
+
+				continue
+			}
+
+			return aws.ToString(output.Instances[0].InstanceId), nil
 		}
 
-		delay := launchBackoff(attempt)
 		slog.Warn(
-			"all instance types and subnets failed, backing off before next retry pass",
-			"attempt", attempt+1,
-			"delay", delay.String(),
+			"all subnets failed for instance type, trying next type",
+			"instanceType", instanceType,
 		)
-
-		timer := time.NewTimer(delay)
-
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-
-			if lastErr == nil {
-				lastErr = ctx.Err()
-			}
-
-			return "", fmt.Errorf("timed out before launching instance: %w", lastErr)
-		case <-timer.C:
-		}
 	}
+
+	if lastErr == nil {
+		lastErr = errors.New("failed to launch instance in any subnet")
+	}
+
+	return "", fmt.Errorf("failed to launch instance: %w", lastErr)
 }
 
 func handler(
@@ -269,12 +230,8 @@ func handler(
 				region = label
 			}
 
-			if candidate := types.InstanceType(
-				label,
-			); slices.Contains(
-				validInstanceTypes,
-				candidate,
-			) &&
+			candidate := types.InstanceType(label)
+			if slices.Contains(validInstanceTypes, candidate) &&
 				!slices.Contains(instanceTypes, candidate) {
 				instanceTypes = append(instanceTypes, candidate)
 			}
@@ -302,7 +259,9 @@ func handler(
 
 		slog.Info("creating runner in region", "region", region)
 
-		svc := ec2.NewFromConfig(cfg)
+		svc := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
+			o.Retryer = newEC2Retryer()
+		})
 		sm := secretsmanager.NewFromConfig(cfg)
 
 		secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
