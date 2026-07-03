@@ -24,6 +24,9 @@ go.work
 
 bootstrap
 
+# Local `go build` output (named after the module directory)
+github-runner-autoscaler
+
 .aws-sam
 
 # Local SAM configuration (not committed)
