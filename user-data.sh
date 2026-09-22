@@ -6,6 +6,16 @@ set -x
 TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
+# xtrace prints expanded command lines, so the PAT never goes on one: it is
+# written through a heredoc (bodies are not traced) and handed to curl as a
+# header file. Anything else that puts it in an argument leaks it to the
+# console log and to `ps`.
+GITHUB_AUTH_HEADER_FILE=/root/.github-auth-header
+install -m 600 /dev/null "${GITHUB_AUTH_HEADER_FILE}"
+cat >> "${GITHUB_AUTH_HEADER_FILE}" <<'EOF'
+Authorization: Bearer {{.GitHubPAT}}
+EOF
+
 # CloudWatch logging setup
 LOG_GROUP="/aws/ec2/github-runner"
 LOG_STREAM="runner-${INSTANCE_ID}-$(date +%Y%m%d-%H%M%S)"
@@ -58,6 +68,13 @@ START_TIME=$(date +%s)
 shutdown +60
 log_to_cloudwatch "INFO" "Set 60-minute shutdown timer"
 
+# GitHub hands a queued job to any idle runner with matching labels, not to the
+# instance launched for it. A runner still idle after this long has lost its job
+# to another runner and would otherwise wait for someone else's, stranding that
+# job's instance in turn. Removal goes through the GitHub API, which rejects it
+# (HTTP 422) once a job is assigned, so a job dispatched meanwhile survives.
+IDLE_TIMEOUT_SECONDS=180
+
 # Update apt sources if needed
 sed -i 's/ap-southeast-3/us-east-2/g' /etc/apt/sources.list
 
@@ -95,7 +112,7 @@ get_github_token() {
         GITHUB_TOKEN=$(curl -s -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer {{.GitHubPAT}}" \
+            -H @"${GITHUB_AUTH_HEADER_FILE}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/orgs/frgrisk/actions/runners/registration-token | jq -r .token)
         
@@ -157,6 +174,70 @@ fi
 END_TIME=$(date +%s)
 EXECUTION_TIME=$((END_TIME - START_TIME))
 log_to_cloudwatch "INFO" "Setup completed in ${EXECUTION_TIME} seconds"
+
+# The runner reads .env from its root at startup; config.sh has already written
+# it, so append. The hook runs once GitHub has assigned a job to this runner, so
+# the marker is only a local shortcut that spares the API call below. A hook
+# that exits non-zero fails the job, hence the `|| true`. GitHub requires hook
+# scripts to live outside the runner application directory.
+HOOK_DIR=/opt/runner-hooks
+JOB_STARTED_MARKER="${HOOK_DIR}/.job-started"
+mkdir -p "${HOOK_DIR}"
+cat > "${HOOK_DIR}/job-started.sh" <<EOF
+#!/bin/bash
+touch "${JOB_STARTED_MARKER}" || true
+EOF
+chmod +x "${HOOK_DIR}/job-started.sh"
+chown -R ubuntu:ubuntu "${HOOK_DIR}"
+echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=${HOOK_DIR}/job-started.sh" | sudo -u ubuntu tee -a .env >/dev/null
+
+idle_watchdog() {
+    # A failed curl must not end the watchdog.
+    set +e
+    sleep "${IDLE_TIMEOUT_SECONDS}"
+    if [ -f "${JOB_STARTED_MARKER}" ]; then
+        return 0
+    fi
+
+    local attempt runner_id code
+    for attempt in 1 2 3 4 5; do
+        runner_id=$(curl -s -L \
+            -H "Accept: application/vnd.github+json" \
+            -H @"${GITHUB_AUTH_HEADER_FILE}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/frgrisk/actions/runners?name=ephemeral-${INSTANCE_ID}" \
+            | jq -r '.runners[0].id // empty')
+        if [ -z "${runner_id}" ]; then
+            log_to_cloudwatch "WARN" "Idle watchdog: could not look up runner (attempt ${attempt}/5)"
+            sleep 30
+            continue
+        fi
+
+        code=$(curl -s -L -o /dev/null -w '%{http_code}' \
+            -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H @"${GITHUB_AUTH_HEADER_FILE}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/frgrisk/actions/runners/${runner_id}")
+        case "${code}" in
+            204)
+                log_to_cloudwatch "INFO" "Idle watchdog: no job after ${IDLE_TIMEOUT_SECONDS}s, runner removed; shutting down"
+                shutdown now
+                return 0
+                ;;
+            422)
+                log_to_cloudwatch "INFO" "Idle watchdog: runner has a job assigned; leaving it running"
+                return 0
+                ;;
+            *)
+                log_to_cloudwatch "WARN" "Idle watchdog: delete returned HTTP ${code} (attempt ${attempt}/5)"
+                sleep 30
+                ;;
+        esac
+    done
+    log_to_cloudwatch "WARN" "Idle watchdog: gave up; the 60-minute timer remains"
+}
+idle_watchdog &
 
 # Start the runner and wait for it to complete
 log_to_cloudwatch "INFO" "Starting GitHub runner"

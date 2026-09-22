@@ -268,10 +268,8 @@ func handler(
 			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
 
 			return events.APIGatewayProxyResponse{
-					StatusCode: http.StatusInternalServerError,
-				}, errors.New(
-					"secret name missing",
-				)
+				StatusCode: http.StatusInternalServerError,
+			}, errors.New("secret name missing")
 		}
 
 		secretOut, err := sm.GetSecretValue(
