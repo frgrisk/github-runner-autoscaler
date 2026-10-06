@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,7 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/google/go-github/v60/github"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -26,19 +26,17 @@ const (
 	stuckAfter = 5 * time.Minute
 
 	// maxLaunchesPerJob caps the instances started for one job, the webhook's
-	// included. EC2 lists terminated instances for about an hour, so a job that
-	// no runner ever takes costs at most this many instances an hour.
+	// included, among those EC2 still lists. EC2 stops listing terminated
+	// instances after about an hour, so this limits a job no runner takes to
+	// this many instances an hour, not in total.
 	maxLaunchesPerJob = 3
 
 	pageSize = 100
 
-	// listConcurrency bounds the job listings in flight, well under GitHub's
-	// secondary rate limit on concurrent requests.
+	// listConcurrency bounds the job listings in flight. GitHub fails requests
+	// with 403 or 429 while a user has more than 100 in flight (a secondary
+	// rate limit), and the runners share this PAT.
 	listConcurrency = 8
-
-	// queued is GitHub's workflow_job action, and run and job status, for
-	// work waiting on a runner.
-	queued = "queued"
 )
 
 // reconcile lists the queued jobs of RECONCILE_REPOSITORIES and launches a
@@ -82,8 +80,6 @@ func reconcile(ctx context.Context) error {
 		jobs, err := queuedJobs(ctx, gh, owner, name, time.Now())
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to list queued jobs in %s: %w", repo, err))
-
-			continue
 		}
 
 		for _, job := range jobs {
@@ -191,7 +187,9 @@ func unmatchedLabels(jobLabels, runnerLabels []string) []string {
 
 // queuedJobs lists the jobs in owner/repo that are waiting for a runner and
 // may have waited past stuckAfter. A run stays in_progress while some of its
-// jobs still queue, so runs of both statuses are scanned.
+// jobs still queue, so runs of both statuses are scanned. A run whose jobs
+// cannot be listed is reported in the error, and the jobs of the other runs are
+// still returned.
 func queuedJobs(
 	ctx context.Context,
 	gh *github.Client,
@@ -237,25 +235,28 @@ func queuedJobs(
 	}
 
 	perRun := make([][]*github.WorkflowJob, len(runIDs))
+	errs := make([]error, len(runIDs))
+	slots := make(chan struct{}, listConcurrency)
 
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(listConcurrency)
+	var wg sync.WaitGroup
 
 	for i, runID := range runIDs {
-		g.Go(func() error {
-			jobs, err := queuedJobsInRun(gctx, gh, owner, repo, runID)
-			perRun[i] = jobs
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
 
-			return err
+			jobs, err := queuedJobsInRun(ctx, gh, owner, repo, runID)
+			if err != nil {
+				errs[i] = fmt.Errorf("failed to list jobs of run %d: %w", runID, err)
+			}
+
+			perRun[i] = jobs
 		})
 	}
 
-	err := g.Wait()
-	if err != nil {
-		return nil, err
-	}
+	wg.Wait()
 
-	return slices.Concat(perRun...), nil
+	return slices.Concat(perRun...), errors.Join(errs...)
 }
 
 func queuedJobsInRun(

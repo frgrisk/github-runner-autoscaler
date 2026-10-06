@@ -149,6 +149,7 @@ func TestQueuedJobs(t *testing.T) {
 		1: now.Add(-20 * time.Minute),
 		2: now.Add(-10 * time.Minute),
 		3: now.Add(-time.Minute),
+		4: now.Add(-15 * time.Minute),
 	}
 
 	mux := http.NewServeMux()
@@ -156,12 +157,12 @@ func TestQueuedJobs(t *testing.T) {
 	mux.HandleFunc("GET /repos/o/r/actions/runs", func(w http.ResponseWriter, r *http.Request) {
 		runs := map[string]map[string][]int64{
 			"queued":      {"": {1}},
-			"in_progress": {"": {1, 3}, "2": {2}},
+			"in_progress": {"": {1, 3}, "2": {2, 4}},
 		}[r.URL.Query().Get("status")]
 
 		page := r.URL.Query().Get("page")
 		if page == "" {
-			w.Header().Set("Link", `<https://api.github.com/x?page=2>; rel="next"`)
+			setNextPage(w)
 		}
 
 		var body github.WorkflowRuns
@@ -181,17 +182,31 @@ func TestQueuedJobs(t *testing.T) {
 				t.Errorf("filter = %q, want latest", got)
 			}
 
-			if r.PathValue("run") == "3" {
+			switch r.PathValue("run") {
+			case "3":
 				t.Error("listed jobs of a run that started under stuckAfter ago")
+			case "4":
+				// Deleted after the runs were listed.
+				w.WriteHeader(http.StatusNotFound)
+
+				return
 			}
 
-			jobs := map[string][]*github.WorkflowJob{
+			page := r.URL.Query().Get("page")
+			if r.PathValue("run") == "1" && page == "" {
+				setNextPage(w)
+			}
+
+			jobs := map[string]map[string][]*github.WorkflowJob{
 				"1": {
-					{ID: new(int64(10)), Status: new("queued")},
-					{ID: new(int64(11)), Status: new("in_progress")},
+					"": {{ID: new(int64(10)), Status: new("queued")}},
+					"2": {
+						{ID: new(int64(11)), Status: new("in_progress")},
+						{ID: new(int64(12)), Status: new("queued")},
+					},
 				},
-				"2": {{ID: new(int64(20)), Status: new("queued")}},
-			}[r.PathValue("run")]
+				"2": {"": {{ID: new(int64(20)), Status: new("queued")}}},
+			}[r.PathValue("run")][page]
 
 			writeJSON(t, w, github.Jobs{Jobs: jobs})
 		},
@@ -204,8 +219,8 @@ func TestQueuedJobs(t *testing.T) {
 	gh.BaseURL, _ = url.Parse(srv.URL + "/")
 
 	jobs, err := queuedJobs(t.Context(), gh, "o", "r", now)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "run 4") {
+		t.Errorf("queuedJobs() error = %v, want run 4's listing failure", err)
 	}
 
 	ids := make([]int64, 0, len(jobs))
@@ -213,10 +228,14 @@ func TestQueuedJobs(t *testing.T) {
 		ids = append(ids, job.GetID())
 	}
 
-	// Run 1 is listed under both statuses; its job must be reported once.
-	if want := []int64{10, 20}; !slices.Equal(ids, want) {
+	// Run 1 is listed under both statuses; its jobs must be reported once.
+	if want := []int64{10, 12, 20}; !slices.Equal(ids, want) {
 		t.Errorf("queued job IDs = %v, want %v", ids, want)
 	}
+}
+
+func setNextPage(w http.ResponseWriter) {
+	w.Header().Set("Link", `<https://api.github.com/x?page=2>; rel="next"`)
 }
 
 type fakeDescribeInstances struct {

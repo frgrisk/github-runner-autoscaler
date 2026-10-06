@@ -52,6 +52,10 @@ const jobIDTagKey = "GitHub Workflow Job Event ID"
 // ephemeralLabel marks jobs this autoscaler launches runners for.
 const ephemeralLabel = "ephemeral"
 
+// queued is GitHub's workflow_job action, and run and job status, for work
+// waiting on a runner.
+const queued = "queued"
+
 func jobIDTagValue(jobID int64) string {
 	return strconv.FormatInt(jobID, 10)
 }
@@ -290,9 +294,9 @@ func fetchPAT(ctx context.Context, cfg aws.Config, secretName string) (string, e
 }
 
 // launchRunner starts an instance that registers an ephemeral runner for a job
-// with these labels, tagged with the job's ID. cfg is the function's base AWS
-// config; the instance and the PAT come from the job's region. It returns the
-// instance ID.
+// with these labels, tagged with the job's ID, and returns the instance ID. Only
+// cfg's credentials are used: the instance is launched, and the PAT read, in the
+// region placement picks from the labels.
 func (s launchSettings) launchRunner(
 	ctx context.Context,
 	cfg aws.Config,
@@ -475,7 +479,9 @@ func handler(
 }
 
 func main() {
-	// Both functions in template.yaml run this binary.
+	// Both functions in template.yaml run this binary. Without
+	// AUTOSCALER_MODE=reconcile, RunnerReconcilerFunction's scheduled events
+	// reach handler, which ignores them, and no job is reconciled.
 	if os.Getenv("AUTOSCALER_MODE") == "reconcile" {
 		lambda.Start(reconcile)
 

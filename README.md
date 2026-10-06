@@ -35,9 +35,9 @@ sam deploy \
   RunnerConfiguration='{\"us-east-2\":{\"ami\":\"0c0c88099397fccb4\",\"subnet\":[\"subnet-0123456789def\"],\"sg\":[\"sg-0123456789def\"],\"key\":\"terraform-2025051801\"},\"ap-southeast-5\":{\"ami\":\"0c0c88099397fccb4\",\"subnet\":[\"subnet-0123456789def\"],\"sg\":[\"sg-0123456789def\"],\"key\":\"terraform-2025051801\"}}'
 ```
 
-The `ExtraRunnerLabels` parameter is optional. When supplied, the labels are
-added to the default runner labels. All other parameters are required and must
-be specified for your environment.
+`ExtraRunnerLabels` and `ReconcileRepositories` (see below) are optional.
+Extra labels are added to the default runner labels. The other parameters are
+required and must be specified for your environment.
 
 ## Reconciling stuck jobs
 
@@ -55,8 +55,13 @@ Every two minutes it lists the queued jobs in those repositories. For each job
 with the `ephemeral` label that has waited five minutes, it checks the EC2
 instances tagged with the job's ID and launches another runner if none started
 in the last five minutes. It stops after three runners per job and fails the
-invocation instead, so the function's `Errors` metric shows jobs it could not
-unstick. It skips jobs whose labels a runner from this stack would not have.
+invocation instead. It skips jobs whose labels a runner from this stack would
+not have.
+
+The function's `Errors` metric counts invocations that hit that limit, failed
+to list jobs or launch a runner, or ran out of time; the logs say which. An
+invocation cut short loses nothing: each launch is recorded in a tag on its
+instance, so the next one carries on from there.
 
 The reconciler reads workflow runs and jobs with the same PAT, which therefore
 also needs read access to Actions in those repositories (`repo` scope on a

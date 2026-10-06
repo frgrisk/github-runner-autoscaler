@@ -30,8 +30,6 @@ Globals:
       - arm64
     Handler: bootstrap
     Runtime: provided.al2023
-    # Capped at 29s to match the API Gateway REST integration timeout.
-    Timeout: 29
     MemorySize: 128
     Environment:
       Variables:
@@ -75,6 +73,8 @@ Resources:
   GitHubActionHookFunction:
     Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
+      # Capped at 29s to match the API Gateway REST integration timeout.
+      Timeout: 29
       Events:
         CatchAll:
           Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
@@ -107,8 +107,9 @@ Resources:
     Condition: ReconcilerEnabled
     Properties:
       # One tick at a time: overlapping ticks can both launch a runner for one
-      # job. A tick that arrives while one runs is dropped, not retried; the
-      # next tick rescans anyway.
+      # job. Lambda retries a tick throttled by a running one until the event is
+      # MaximumEventAgeInSeconds old, then drops it; a tick that fails is not
+      # retried. Either way the next tick rescans.
       ReservedConcurrentExecutions: 1
       Timeout: 90
       EventInvokeConfig:
