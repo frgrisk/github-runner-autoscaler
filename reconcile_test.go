@@ -63,6 +63,7 @@ func TestNeedsAnotherRunner(t *testing.T) {
 	}
 }
 
+//nolint:goconst // Cases spell out runs-on label lists literally.
 func TestUnmatchedLabels(t *testing.T) {
 	t.Parallel()
 
