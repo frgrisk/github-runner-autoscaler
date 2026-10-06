@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -96,15 +97,29 @@ var excludeLaunchCycleErrors = retry.IsErrorRetryableFunc(func(err error) aws.Te
 	return aws.UnknownTernary
 })
 
-// newEC2Retryer returns the SDK's standard retryer (throttle + transient backoff
-// left at defaults) with cycle errors excluded so launchInstance can move to the
-// next subnet/type without waiting on same-call retries.
+// A burst of queued jobs throttles RunInstances (RequestLimitExceeded) for
+// longer than the SDK's default three attempts back off, and GitHub does not
+// redeliver the webhook of a launch that fails. The SDK waits under 2^n seconds
+// after attempt n, capped at ec2MaxBackoff, so one RunInstances call waits at
+// most 2+4+4+4+4 = 18s across its five retries. That must stay under the
+// webhook function's 29s timeout, or a throttled launch times out instead of
+// logging its error.
+const (
+	ec2MaxAttempts = 6
+	ec2MaxBackoff  = 4 * time.Second
+)
+
+// newEC2Retryer returns the SDK's standard retryer with cycle errors excluded,
+// so launchInstance can move to the next subnet/type without waiting on
+// same-call retries.
 func newEC2Retryer() *retry.Standard {
 	return retry.NewStandard(func(o *retry.StandardOptions) {
 		o.Retryables = append(
 			[]retry.IsErrorRetryable{excludeLaunchCycleErrors},
 			retry.DefaultRetryables...,
 		)
+		o.MaxAttempts = ec2MaxAttempts
+		o.MaxBackoff = ec2MaxBackoff
 	})
 }
 
