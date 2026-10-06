@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": ["Skill"]
+  },
+  "extraKnownMarketplaces": {
+    "mattpocock": {
+      "source": {
+        "source": "github",
+        "repo": "mattpocock/skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "claude-md-management@claude-plugins-official": true,
+    "cc-skills-golang@samber": true,
+    "mattpocock-skills@mattpocock": true
+  }
+}
