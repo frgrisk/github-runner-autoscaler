@@ -1,6 +1,6 @@
 module github.com/frgrisk/github-runner-autoscaler
 
-go 1.26
+go 1.27
 
 require (
 	github.com/aws/aws-lambda-go v1.51.1
