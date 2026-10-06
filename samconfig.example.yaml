@@ -10,6 +10,7 @@ dev:
       parameter_overrides:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=dev
+        - ReconcileRepositories=your-org/your-repo
         - >-
           RunnerConfiguration={
             "us-east-2":{

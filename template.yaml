@@ -12,6 +12,16 @@ Parameters:
   RunnerConfiguration:
     Type: String
     Description: JSON string defining per-region runner settings (AMI, subnets array, security groups, SSH key).
+  ReconcileRepositories:
+    Type: String
+    Default: ""
+    Description: >-
+      Comma separated owner/repo list whose queued ephemeral jobs are rechecked
+      every two minutes and given a runner if theirs never started. Empty
+      disables the reconciler.
+
+Conditions:
+  ReconcilerEnabled: !Not [!Equals [!Ref ReconcileRepositories, ""]]
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
@@ -19,6 +29,12 @@ Globals:
     # Capped at 29s to match the API Gateway REST integration timeout.
     Timeout: 29
     MemorySize: 128
+    Environment:
+      Variables:
+        GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
+        EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
+        RUNNER_CONFIGURATION: !Ref RunnerConfiguration
+        INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
 
 Resources:
   # IAM Role for EC2 instances
@@ -69,12 +85,6 @@ Resources:
               - method.request.header.X-GitHub-Event:
                   Required: true
                   Caching: false
-      Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
-        Variables:
-          GITHUB_PAT_SECRET_NAME: !Ref GitHubPATSecretName
-          EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
-          RUNNER_CONFIGURATION: !Ref RunnerConfiguration
-          INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
       Policies:
         - Statement:
             - Sid: RunInstances
@@ -84,6 +94,46 @@ Resources:
                 - iam:PassRole
                 - ec2:CreateTags
                 - ec2:RunInstances
+              Resource: "*"
+            - Sid: GetGitHubPAT
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:${GitHubPATSecretName}*
+    Metadata:
+      BuildMethod: makefile
+  RunnerReconcilerFunction:
+    Type: AWS::Serverless::Function
+    Condition: ReconcilerEnabled
+    Properties:
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Runtime: provided.al2023
+      # Shorter than the schedule period, and no retries, so two ticks never
+      # run at once; overlapping ticks can both launch a runner for one job.
+      Timeout: 90
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+      Events:
+        Reconcile:
+          Type: Schedule
+          Properties:
+            Schedule: rate(2 minutes)
+      Environment:
+        Variables:
+          AUTOSCALER_MODE: reconcile
+          RECONCILE_REPOSITORIES: !Ref ReconcileRepositories
+      Policies:
+        - Statement:
+            - Sid: RunInstances
+              Effect: Allow
+              Action:
+                - ssm:GetParameters
+                - iam:PassRole
+                - ec2:CreateTags
+                - ec2:RunInstances
+                - ec2:DescribeInstances
               Resource: "*"
             - Sid: GetGitHubPAT
               Effect: Allow
@@ -106,3 +156,7 @@ Outputs:
   GitHubActionHookFunctionIamRole:
     Description: "Implicit IAM Role created for GitHubActionHook function"
     Value: !GetAtt GitHubActionHookFunctionRole.Arn
+  RunnerReconcilerFunction:
+    Condition: ReconcilerEnabled
+    Description: "Queued job reconciler Lambda Function ARN; invoke it to reconcile now."
+    Value: !GetAtt RunnerReconcilerFunction.Arn

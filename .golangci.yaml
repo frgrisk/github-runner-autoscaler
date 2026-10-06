@@ -19,6 +19,13 @@ linters:
     - funlen
     - maintidx
     - wsl
+  exclusions:
+    rules:
+      # Table tests spell out label lists literally so each case reads as a
+      # workflow's runs-on.
+      - path: _test\.go
+        linters:
+          - goconst
 formatters:
   # Enable specific formatter.
   # Default: [] (uses standard Go formatting)

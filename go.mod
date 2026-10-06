@@ -1,6 +1,6 @@
 module github.com/frgrisk/github-runner-autoscaler
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/aws/aws-lambda-go v1.51.1
@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.0
 	github.com/aws/smithy-go v1.24.0
 	github.com/google/go-github/v60 v60.0.0
+	golang.org/x/sync v0.23.0
 )
 
 require (

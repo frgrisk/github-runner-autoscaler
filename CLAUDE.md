@@ -12,7 +12,7 @@ GitHub Runner Autoscaler is a serverless AWS solution that automatically provisi
 ```bash
 sam build
 ```
-This compiles the Go Lambda function to a Linux ARM64 binary named `bootstrap` via the `build-GitHubActionHookFunction` Makefile target.
+This compiles the Go Lambda binary to a Linux ARM64 executable named `bootstrap`. Both functions use the same binary; the Makefile rule covers both build targets (`build-GitHubActionHookFunction`, `build-RunnerReconcilerFunction`).
 
 ### Deploy
 ```bash
@@ -31,8 +31,9 @@ make build-GitHubActionHookFunction ARTIFACTS_DIR=.
 The system consists of:
 1. **API Gateway** - Receives GitHub webhooks
 2. **Lambda Function** (main.go) - Processes webhook events and launches EC2 instances
-3. **EC2 Instances** - Ephemeral runners that execute GitHub Actions jobs
-4. **Secrets Manager** - Stores GitHub PAT securely
+3. **Reconciler Function** (reconcile.go, optional) - Every two minutes, launches runners for queued jobs whose webhook-launched runner never arrived. It is deployed only when `ReconcileRepositories` is set, and `AUTOSCALER_MODE=reconcile` selects its handler in `main()`
+4. **EC2 Instances** - Ephemeral runners that execute GitHub Actions jobs
+5. **Secrets Manager** - Stores GitHub PAT securely
 
 The Lambda function:
 - Validates incoming webhooks (must be "queued" workflow jobs with "ephemeral" label)
@@ -42,7 +43,8 @@ The Lambda function:
 
 ## Key Files
 
-- `main.go` - Lambda handler logic
+- `main.go` - Webhook handler and the shared runner launch path (`launchRunner`)
+- `reconcile.go` - Scheduled reconciler for stuck queued jobs
 - `template.yaml` - SAM/CloudFormation infrastructure definition
 - `user-data.sh` - EC2 initialization script (embedded in Lambda)
 - `samconfig.example.yaml` - Example deployment configuration
@@ -52,6 +54,8 @@ The Lambda function:
 - The Lambda uses ARM64 architecture with 128MB memory
 - User data script is embedded at compile time from `user-data.sh`
 - Instance types can be specified via workflow labels or default to `c7a.large`
+- Each instance is tagged `GitHub Workflow Job Event ID` with the job it was launched for; the reconciler counts a job's launches by that tag
+- `runnerLabels` in reconcile.go must match the `config.sh --labels` in user-data.sh
 - Instances shut down after job completion, after 3 minutes without a job (the runner is first removed via the GitHub API, which refuses if a job was assigned), or after 60 minutes as a backstop
 
 ## Commit Guidelines

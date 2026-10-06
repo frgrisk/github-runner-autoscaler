@@ -39,6 +39,11 @@ type RunnerConfiguration struct {
 	KeyName        string   `json:"key"`
 }
 
+// jobIDTagKey tags each runner instance with the ID of the job it was launched
+// for. The reconciler counts a job's launches by this tag; if the two disagree,
+// every queued job looks runner-less and gets duplicate runners.
+const jobIDTagKey = "GitHub Workflow Job Event ID"
+
 // launchCycleErrorCodes are EC2 error codes for which launching the runner in
 // the next configured subnet (potentially a different AZ) or the next candidate
 // instance type may succeed. launchInstance handles these itself by cycling to
@@ -158,6 +163,218 @@ func launchInstance(
 	return "", fmt.Errorf("failed to launch instance: %w", lastErr)
 }
 
+// launchSettings is the deployment configuration the function reads from its
+// environment.
+type launchSettings struct {
+	runnerConfig       map[string]RunnerConfiguration
+	defaultRegion      string
+	secretName         string
+	extraLabels        []string
+	instanceProfileArn string
+}
+
+func loadLaunchSettings() (launchSettings, error) {
+	runnerCfg := os.Getenv("RUNNER_CONFIGURATION")
+	if runnerCfg == "" {
+		return launchSettings{}, errors.New("RUNNER_CONFIGURATION env var not set")
+	}
+
+	var runnerConfig map[string]RunnerConfiguration
+
+	err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
+	if err != nil {
+		return launchSettings{}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
+	}
+
+	secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
+	if secretName == "" {
+		return launchSettings{}, errors.New("GITHUB_PAT_SECRET_NAME env var not set")
+	}
+
+	instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
+	if instanceProfileArn == "" {
+		return launchSettings{}, errors.New("INSTANCE_PROFILE_ARN env var not set")
+	}
+
+	return launchSettings{
+		runnerConfig:       runnerConfig,
+		defaultRegion:      cmp.Or(os.Getenv("AWS_DEFAULT_REGION"), os.Getenv("AWS_REGION")),
+		secretName:         secretName,
+		extraLabels:        splitList(os.Getenv("EXTRA_RUNNER_LABELS")),
+		instanceProfileArn: instanceProfileArn,
+	}, nil
+}
+
+// splitList parses a comma separated setting, dropping blank entries.
+func splitList(s string) []string {
+	var items []string
+
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+
+	return items
+}
+
+// placement picks the region and candidate instance types for a job from its
+// labels. A label naming a configured region selects it, otherwise the
+// function's own region is used. Instance types are tried in the order the
+// labels appear on the job, which lets a launch fall back when a type is out of
+// capacity (InsufficientInstanceCapacity) in every configured subnet.
+func (s launchSettings) placement(labels []string) (string, []types.InstanceType) {
+	region := s.defaultRegion
+	validInstanceTypes := types.InstanceTypeC7aLarge.Values()
+
+	var instanceTypes []types.InstanceType
+
+	for _, label := range labels {
+		if _, ok := s.runnerConfig[label]; ok {
+			region = label
+		}
+
+		candidate := types.InstanceType(label)
+		if slices.Contains(validInstanceTypes, candidate) &&
+			!slices.Contains(instanceTypes, candidate) {
+			instanceTypes = append(instanceTypes, candidate)
+		}
+	}
+
+	if len(instanceTypes) == 0 {
+		instanceTypes = []types.InstanceType{types.InstanceTypeC7aLarge}
+	}
+
+	return region, instanceTypes
+}
+
+func fetchPAT(ctx context.Context, cfg aws.Config, secretName string) (string, error) {
+	secretOut, err := secretsmanager.NewFromConfig(cfg).GetSecretValue(
+		ctx,
+		&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to get secret %s: %w", secretName, err)
+	}
+
+	return aws.ToString(secretOut.SecretString), nil
+}
+
+// launchRunner starts an instance that registers an ephemeral runner for a job
+// with these labels, tagged with the job's ID. It returns the instance ID.
+func launchRunner(
+	ctx context.Context,
+	s launchSettings,
+	jobID int64,
+	labels []string,
+) (string, error) {
+	region, instanceTypes := s.placement(labels)
+
+	regionCfg, ok := s.runnerConfig[region]
+	if !ok {
+		return "", fmt.Errorf("no config for region %s", region)
+	}
+
+	if len(regionCfg.SubnetID) == 0 {
+		return "", fmt.Errorf("no subnets configured for region %s", region)
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return "", err
+	}
+
+	slog.Info("creating runner in region", "region", region)
+
+	svc := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
+		o.Retryer = newEC2Retryer()
+	})
+
+	pat, err := fetchPAT(ctx, cfg, s.secretName)
+	if err != nil {
+		return "", err
+	}
+
+	var extraLabels string
+	if len(s.extraLabels) > 0 {
+		extraLabels = "," + strings.Join(s.extraLabels, ",")
+	}
+
+	tags := []types.Tag{
+		{
+			Key:   aws.String(jobIDTagKey),
+			Value: aws.String(strconv.FormatInt(jobID, 10)),
+		},
+		{
+			Key:   aws.String("Name"),
+			Value: aws.String("GitHub Workflow Ephemeral Runner"),
+		},
+	}
+
+	slog.Info("creating instance", "instanceTypes", instanceTypes)
+
+	tpl, err := template.New("userdata").Parse(userData)
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+
+	err = tpl.Execute(
+		&buf,
+		map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	finalUserData := buf.String()
+
+	runInput := &ec2.RunInstancesInput{
+		MinCount:                          aws.Int32(1),
+		MaxCount:                          aws.Int32(1),
+		EbsOptimized:                      aws.Bool(true),
+		ImageId:                           aws.String(regionCfg.ImageID),
+		InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
+		// InstanceType is set per-attempt by launchInstance so it can fall
+		// back across the candidate instanceTypes on capacity errors.
+		IamInstanceProfile: &types.IamInstanceProfileSpecification{
+			Arn: aws.String(s.instanceProfileArn),
+		},
+		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
+			{
+				AssociatePublicIpAddress: aws.Bool(true),
+				DeleteOnTermination:      aws.Bool(true),
+				DeviceIndex:              aws.Int32(0),
+				Groups:                   regionCfg.SecurityGroups,
+			},
+		},
+		KeyName:    aws.String(regionCfg.KeyName),
+		Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+		TagSpecifications: []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeInstance,
+				Tags:         tags,
+			},
+			{
+				ResourceType: types.ResourceTypeVolume,
+				Tags:         tags,
+			},
+		},
+		// base64 encode user data
+		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+	}
+
+	instanceID, err := launchInstance(ctx, svc, runInput, instanceTypes, regionCfg.SubnetID)
+	if err != nil {
+		return "", err
+	}
+
+	slog.Info("instance created", "instanceID", instanceID, "jobID", jobID)
+
+	return instanceID, nil
+}
+
 func handler(
 	ctx context.Context,
 	request events.APIGatewayProxyRequest,
@@ -189,190 +406,30 @@ func handler(
 
 	switch event := event.(type) {
 	case *github.WorkflowJobEvent:
-		if event.GetAction() != "queued" {
+		if event.GetAction() != queued {
 			slog.Info("not a queued job event")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
-		runnerCfg := os.Getenv("RUNNER_CONFIGURATION")
-		if runnerCfg == "" {
-			slog.Error("RUNNER_CONFIGURATION env var not set")
+		job := event.GetWorkflowJob()
 
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, errors.New("runner configuration missing")
-		}
-
-		var runnerConfig map[string]RunnerConfiguration
-
-		err := json.Unmarshal([]byte(runnerCfg), &runnerConfig)
-		if err != nil {
-			slog.Error("invalid RUNNER_CONFIGURATION JSON", "error", err.Error())
-
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, fmt.Errorf("RUNNER_CONFIGURATION contains invalid JSON: %w", err)
-		}
-
-		region := cmp.Or(os.Getenv("AWS_DEFAULT_REGION"), os.Getenv("AWS_REGION"))
-
-		validInstanceTypes := types.InstanceTypeC7aLarge.Values()
-
-		// Candidate instance types to try, in the order the labels appear on the
-		// job. Trying several lets the launch fall back when a type is out of
-		// capacity (InsufficientInstanceCapacity) in every configured subnet.
-		var instanceTypes []types.InstanceType
-
-		for _, label := range event.GetWorkflowJob().Labels {
-			if _, ok := runnerConfig[label]; ok {
-				region = label
-			}
-
-			candidate := types.InstanceType(label)
-			if slices.Contains(validInstanceTypes, candidate) &&
-				!slices.Contains(instanceTypes, candidate) {
-				instanceTypes = append(instanceTypes, candidate)
-			}
-		}
-
-		if len(instanceTypes) == 0 {
-			instanceTypes = []types.InstanceType{types.InstanceTypeC7aLarge}
-		}
-
-		regionCfg, ok := runnerConfig[region]
-		if !ok {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
-				fmt.Errorf("no config for region %s", region)
-		}
-
-		if len(regionCfg.SubnetID) == 0 {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError},
-				fmt.Errorf("no subnets configured for region %s", region)
-		}
-
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		slog.Info("creating runner in region", "region", region)
-
-		svc := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
-			o.Retryer = newEC2Retryer()
-		})
-		sm := secretsmanager.NewFromConfig(cfg)
-
-		secretName := os.Getenv("GITHUB_PAT_SECRET_NAME")
-		if secretName == "" {
-			slog.Error("GITHUB_PAT_SECRET_NAME env var not set")
-
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, errors.New("secret name missing")
-		}
-
-		secretOut, err := sm.GetSecretValue(
-			ctx,
-			&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
-		)
-		if err != nil {
-			slog.Error(
-				"failed to get secret", "secret", secretName, "error", err.Error(),
-			)
-
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		pat := aws.ToString(secretOut.SecretString)
-
-		extraLabels := os.Getenv("EXTRA_RUNNER_LABELS")
-		if extraLabels != "" {
-			extraLabels = "," + extraLabels
-		}
-
-		instanceProfileArn := os.Getenv("INSTANCE_PROFILE_ARN")
-		if instanceProfileArn == "" {
-			slog.Error("INSTANCE_PROFILE_ARN env var not set")
-
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-			}, errors.New("instance profile arn missing")
-		}
-
-		tags := []types.Tag{
-			{
-				Key:   aws.String("GitHub Workflow Job Event ID"),
-				Value: aws.String(strconv.Itoa(int(event.GetWorkflowJob().GetID()))),
-			},
-			{
-				Key:   aws.String("Name"),
-				Value: aws.String("GitHub Workflow Ephemeral Runner"),
-			},
-		}
-
-		ephemeral := slices.Contains(event.GetWorkflowJob().Labels, "ephemeral")
-		if !ephemeral {
+		if !slices.Contains(job.Labels, "ephemeral") {
 			slog.Info("not ephemeral")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
 		}
 
-		slog.Info("creating instance", "instanceTypes", instanceTypes)
-
-		tpl, err := template.New("userdata").Parse(userData)
+		settings, err := loadLaunchSettings()
 		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
+			slog.Error("invalid configuration", "error", err.Error())
+
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, err
 		}
 
-		var buf bytes.Buffer
-
-		err = tpl.Execute(
-			&buf,
-			map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels},
-		)
-		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError}, err
-		}
-
-		finalUserData := buf.String()
-
-		runInput := &ec2.RunInstancesInput{
-			MinCount:                          aws.Int32(1),
-			MaxCount:                          aws.Int32(1),
-			EbsOptimized:                      aws.Bool(true),
-			ImageId:                           aws.String(regionCfg.ImageID),
-			InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
-			// InstanceType is set per-attempt by launchInstance so it can fall
-			// back across the candidate instanceTypes on capacity errors.
-			IamInstanceProfile: &types.IamInstanceProfileSpecification{
-				Arn: aws.String(instanceProfileArn),
-			},
-			NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-				{
-					AssociatePublicIpAddress: aws.Bool(true),
-					DeleteOnTermination:      aws.Bool(true),
-					DeviceIndex:              aws.Int32(0),
-					Groups:                   regionCfg.SecurityGroups,
-				},
-			},
-			KeyName:    aws.String(regionCfg.KeyName),
-			Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
-			TagSpecifications: []types.TagSpecification{
-				{
-					ResourceType: types.ResourceTypeInstance,
-					Tags:         tags,
-				},
-				{
-					ResourceType: types.ResourceTypeVolume,
-					Tags:         tags,
-				},
-			},
-			// base64 encode user data
-			UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
-		}
-
-		instanceID, err := launchInstance(ctx, svc, runInput, instanceTypes, regionCfg.SubnetID)
+		instanceID, err := launchRunner(ctx, settings, job.GetID(), job.Labels)
 		if err != nil {
 			slog.Error("failed to launch instance", "error", err.Error())
 
@@ -381,8 +438,6 @@ func handler(
 				StatusCode: http.StatusInternalServerError,
 			}, err
 		}
-
-		slog.Info("instance created", "instanceID", instanceID)
 
 		return events.APIGatewayProxyResponse{
 			Body:       instanceID,
@@ -401,5 +456,12 @@ func handler(
 }
 
 func main() {
+	// Both functions in template.yaml run this binary.
+	if os.Getenv("AUTOSCALER_MODE") == "reconcile" {
+		lambda.Start(reconcile)
+
+		return
+	}
+
 	lambda.Start(handler)
 }
