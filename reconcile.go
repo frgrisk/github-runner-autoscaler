@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,12 +17,6 @@ import (
 	"github.com/google/go-github/v60/github"
 	"golang.org/x/sync/errgroup"
 )
-
-// The webhook handler launches one runner per workflow_job "queued" delivery,
-// and GitHub does not retry a delivery that fails or times out. On a schedule,
-// reconcile lists the queued jobs of RECONCILE_REPOSITORIES and launches a
-// runner for any job that has waited past stuckAfter without one. That covers
-// lost deliveries, failed launches and instances that died before registering.
 
 const (
 	// stuckAfter is how long a queued job, and the newest runner launched for
@@ -48,6 +41,11 @@ const (
 	queued = "queued"
 )
 
+// reconcile lists the queued jobs of RECONCILE_REPOSITORIES and launches a
+// runner for any job that has waited past stuckAfter without one. The webhook
+// handler launches one runner per workflow_job "queued" delivery, and GitHub
+// does not retry a delivery that fails or times out; this covers those lost
+// deliveries, failed launches and instances that died before registering.
 func reconcile(ctx context.Context) error {
 	repos := splitList(os.Getenv("RECONCILE_REPOSITORIES"))
 	if len(repos) == 0 {
@@ -70,7 +68,6 @@ func reconcile(ctx context.Context) error {
 	}
 
 	gh := github.NewClient(nil).WithAuthToken(pat)
-	ec2Clients := map[string]*ec2.Client{}
 
 	var errs []error
 
@@ -90,22 +87,7 @@ func reconcile(ctx context.Context) error {
 		}
 
 		for _, job := range jobs {
-			region, _ := settings.placement(job.Labels)
-
-			client, ok := ec2Clients[region]
-			if !ok {
-				regionCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-				if err != nil {
-					errs = append(errs, err)
-
-					continue
-				}
-
-				client = ec2.NewFromConfig(regionCfg)
-				ec2Clients[region] = client
-			}
-
-			err := reconcileJob(ctx, settings, client, job, time.Now())
+			err := reconcileJob(ctx, settings, cfg, job)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("job %d in %s: %w", job.GetID(), repo, err))
 			}
@@ -118,13 +100,14 @@ func reconcile(ctx context.Context) error {
 func reconcileJob(
 	ctx context.Context,
 	settings launchSettings,
-	client ec2.DescribeInstancesAPIClient,
+	cfg aws.Config,
 	job *github.WorkflowJob,
-	now time.Time,
 ) error {
-	if !slices.Contains(job.Labels, "ephemeral") {
+	if !slices.Contains(job.Labels, ephemeralLabel) {
 		return nil
 	}
+
+	now := time.Now()
 
 	queuedFor := now.Sub(job.GetCreatedAt().Time)
 	if queuedFor < stuckAfter {
@@ -142,7 +125,9 @@ func reconcileJob(
 		return nil
 	}
 
-	launches, err := runnerLaunches(ctx, client, job.GetID())
+	cfg.Region = region
+
+	launches, err := runnerLaunches(ctx, ec2.NewFromConfig(cfg), job.GetID())
 	if err != nil {
 		return err
 	}
@@ -155,7 +140,7 @@ func reconcileJob(
 	log.Warn("queued job has no runner, launching one",
 		"queuedFor", queuedFor.Round(time.Second), "launches", len(launches))
 
-	_, err = launchRunner(ctx, settings, job.GetID(), job.Labels)
+	_, err = settings.launchRunner(ctx, cfg, job.GetID(), job.Labels)
 
 	return err
 }
@@ -165,10 +150,10 @@ func reconcileJob(
 // had stuckAfter to start, a job that has used up maxLaunchesPerJob is
 // reported as an error instead, so the invocation fails visibly.
 func needsAnotherRunner(launches []time.Time, now time.Time) (bool, error) {
-	for _, launched := range launches {
-		if now.Sub(launched) < stuckAfter {
-			return false, nil
-		}
+	if slices.ContainsFunc(launches, func(launched time.Time) bool {
+		return now.Sub(launched) < stuckAfter
+	}) {
+		return false, nil
 	}
 
 	if len(launches) >= maxLaunchesPerJob {
@@ -178,14 +163,13 @@ func needsAnotherRunner(launches []time.Time, now time.Time) (bool, error) {
 	return true, nil
 }
 
-// runnerLabels are the labels a runner launched in region on instanceType
-// registers with. GitHub adds self-hosted, Linux and X64 itself; the rest must
-// match config.sh --labels in user-data.sh. A label missing here makes the
-// reconciler skip jobs the runner could take.
+// runnerLabels are all the labels a runner launched in region on instanceType
+// carries: GitHub's defaults for a self-hosted Linux x64 runner, its instance
+// type, and the registeredLabels user-data.sh passes to config.sh.
 func (s launchSettings) runnerLabels(region string, instanceType types.InstanceType) []string {
 	return append(
-		[]string{"self-hosted", "linux", "x64", "ephemeral", region, string(instanceType)},
-		s.extraLabels...,
+		[]string{"self-hosted", "Linux", "X64", string(instanceType)},
+		s.registeredLabels(region)...,
 	)
 }
 
@@ -221,8 +205,10 @@ func queuedJobs(
 
 	for _, status := range []string{queued, "in_progress"} {
 		opts := &github.ListWorkflowRunsOptions{
-			Status:  status,
-			PerPage: pageSize,
+			Status: status,
+			// The reconciler never reads a run's pull requests.
+			ExcludePullRequests: true,
+			PerPage:             pageSize,
 		}
 
 		for {
@@ -315,7 +301,7 @@ func runnerLaunches(
 	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{
 		Filters: []types.Filter{{
 			Name:   new("tag:" + jobIDTagKey),
-			Values: []string{strconv.FormatInt(jobID, 10)},
+			Values: []string{jobIDTagValue(jobID)},
 		}},
 	})
 

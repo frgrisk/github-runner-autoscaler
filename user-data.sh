@@ -138,8 +138,8 @@ if ! get_github_token; then
     exit 1
 fi
 
-# Configure runner with retry. runnerLabels in reconcile.go must list the same
-# labels, or the reconciler skips jobs these runners can take.
+# Configure runner with retry. Every label but the instance type comes from
+# registeredLabels in main.go.
 log_to_cloudwatch "INFO" "Configuring GitHub runner"
 max_config_attempts=3
 config_attempt=1
@@ -150,7 +150,7 @@ while [ $config_attempt -le $max_config_attempts ]; do
         --token "$GITHUB_TOKEN" \
         --disableupdate \
         --ephemeral \
-        --labels "${INSTANCE_TYPE},ephemeral,X64{{.ExtraLabels}},${REGION}" \
+        --labels "${INSTANCE_TYPE},{{.Labels}}" \
         --unattended \
         --name "ephemeral-${INSTANCE_ID}" \
         --work _work; then

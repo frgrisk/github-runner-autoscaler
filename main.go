@@ -32,6 +32,10 @@ import (
 //go:embed user-data.sh
 var userData string
 
+var userDataTemplate = template.Must(template.New("userdata").Parse(userData))
+
+var validInstanceTypes = types.InstanceTypeC7aLarge.Values()
+
 type RunnerConfiguration struct {
 	ImageID        string   `json:"ami"`
 	SubnetID       []string `json:"subnet"`
@@ -40,9 +44,17 @@ type RunnerConfiguration struct {
 }
 
 // jobIDTagKey tags each runner instance with the ID of the job it was launched
-// for. The reconciler counts a job's launches by this tag; if the two disagree,
-// every queued job looks runner-less and gets duplicate runners.
+// for, and the reconciler counts a job's launches by it. Changing it hides
+// instances tagged under the old key, so their jobs get duplicate runners until
+// EC2 stops listing them.
 const jobIDTagKey = "GitHub Workflow Job Event ID"
+
+// ephemeralLabel marks jobs this autoscaler launches runners for.
+const ephemeralLabel = "ephemeral"
+
+func jobIDTagValue(jobID int64) string {
+	return strconv.FormatInt(jobID, 10)
+}
 
 // launchCycleErrorCodes are EC2 error codes for which launching the runner in
 // the next configured subnet (potentially a different AZ) or the next candidate
@@ -225,7 +237,6 @@ func splitList(s string) []string {
 // capacity (InsufficientInstanceCapacity) in every configured subnet.
 func (s launchSettings) placement(labels []string) (string, []types.InstanceType) {
 	region := s.defaultRegion
-	validInstanceTypes := types.InstanceTypeC7aLarge.Values()
 
 	var instanceTypes []types.InstanceType
 
@@ -248,6 +259,24 @@ func (s launchSettings) placement(labels []string) (string, []types.InstanceType
 	return region, instanceTypes
 }
 
+// registeredLabels are the labels user-data.sh registers a runner in region
+// with, besides its instance type. That one is read from instance metadata
+// because launchInstance may fall back to another type after rendering.
+func (s launchSettings) registeredLabels(region string) []string {
+	return append([]string{ephemeralLabel, "X64", region}, s.extraLabels...)
+}
+
+func (s launchSettings) userData(pat, region string) ([]byte, error) {
+	var buf bytes.Buffer
+
+	err := userDataTemplate.Execute(&buf, map[string]string{
+		"GitHubPAT": pat,
+		"Labels":    strings.Join(s.registeredLabels(region), ","),
+	})
+
+	return buf.Bytes(), err
+}
+
 func fetchPAT(ctx context.Context, cfg aws.Config, secretName string) (string, error) {
 	secretOut, err := secretsmanager.NewFromConfig(cfg).GetSecretValue(
 		ctx,
@@ -261,10 +290,12 @@ func fetchPAT(ctx context.Context, cfg aws.Config, secretName string) (string, e
 }
 
 // launchRunner starts an instance that registers an ephemeral runner for a job
-// with these labels, tagged with the job's ID. It returns the instance ID.
-func launchRunner(
+// with these labels, tagged with the job's ID. cfg is the function's base AWS
+// config; the instance and the PAT come from the job's region. It returns the
+// instance ID.
+func (s launchSettings) launchRunner(
 	ctx context.Context,
-	s launchSettings,
+	cfg aws.Config,
 	jobID int64,
 	labels []string,
 ) (string, error) {
@@ -279,10 +310,7 @@ func launchRunner(
 		return "", fmt.Errorf("no subnets configured for region %s", region)
 	}
 
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-	if err != nil {
-		return "", err
-	}
+	cfg.Region = region
 
 	slog.Info("creating runner in region", "region", region)
 
@@ -295,15 +323,10 @@ func launchRunner(
 		return "", err
 	}
 
-	var extraLabels string
-	if len(s.extraLabels) > 0 {
-		extraLabels = "," + strings.Join(s.extraLabels, ",")
-	}
-
 	tags := []types.Tag{
 		{
 			Key:   new(jobIDTagKey),
-			Value: new(strconv.FormatInt(jobID, 10)),
+			Value: new(jobIDTagValue(jobID)),
 		},
 		{
 			Key:   new("Name"),
@@ -313,22 +336,10 @@ func launchRunner(
 
 	slog.Info("creating instance", "instanceTypes", instanceTypes)
 
-	tpl, err := template.New("userdata").Parse(userData)
+	script, err := s.userData(pat, region)
 	if err != nil {
 		return "", err
 	}
-
-	var buf bytes.Buffer
-
-	err = tpl.Execute(
-		&buf,
-		map[string]string{"GitHubPAT": pat, "ExtraLabels": extraLabels},
-	)
-	if err != nil {
-		return "", err
-	}
-
-	finalUserData := buf.String()
 
 	runInput := &ec2.RunInstancesInput{
 		MinCount:                          new(int32(1)),
@@ -361,8 +372,7 @@ func launchRunner(
 				Tags:         tags,
 			},
 		},
-		// base64 encode user data
-		UserData: new(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+		UserData: new(base64.StdEncoding.EncodeToString(script)),
 	}
 
 	instanceID, err := launchInstance(ctx, svc, runInput, instanceTypes, regionCfg.SubnetID)
@@ -414,7 +424,7 @@ func handler(
 
 		job := event.GetWorkflowJob()
 
-		if !slices.Contains(job.Labels, "ephemeral") {
+		if !slices.Contains(job.Labels, ephemeralLabel) {
 			slog.Info("not ephemeral")
 
 			return events.APIGatewayProxyResponse{StatusCode: http.StatusOK}, nil
@@ -429,7 +439,16 @@ func handler(
 			}, err
 		}
 
-		instanceID, err := launchRunner(ctx, settings, job.GetID(), job.Labels)
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			slog.Error("failed to load AWS config", "error", err.Error())
+
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+			}, err
+		}
+
+		instanceID, err := settings.launchRunner(ctx, cfg, job.GetID(), job.Labels)
 		if err != nil {
 			slog.Error("failed to launch instance", "error", err.Error())
 

@@ -55,7 +55,7 @@ The Lambda function:
 - User data script is embedded at compile time from `user-data.sh`
 - Instance types can be specified via workflow labels or default to `c7a.large`
 - Each instance is tagged `GitHub Workflow Job Event ID` with the job it was launched for; the reconciler counts a job's launches by that tag
-- `runnerLabels` in reconcile.go must match the `config.sh --labels` in user-data.sh
+- Runner labels come from `registeredLabels` in main.go, rendered into user-data.sh; only the instance type is read from instance metadata, because the launch may fall back to another type
 - Instances shut down after job completion, after 3 minutes without a job (the runner is first removed via the GitHub API, which refuses if a job was assigned), or after 60 minutes as a backstop
 
 ## Commit Guidelines

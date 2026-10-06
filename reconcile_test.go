@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/google/go-github/v60/github"
@@ -20,12 +21,6 @@ func TestNeedsAnotherRunner(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-
-	limit := []time.Time{
-		now.Add(-30 * time.Minute),
-		now.Add(-20 * time.Minute),
-		now.Add(-10 * time.Minute),
-	}
 
 	tests := []struct {
 		name     string
@@ -41,10 +36,23 @@ func TestNeedsAnotherRunner(t *testing.T) {
 			false,
 			false,
 		},
-		{"launch limit reached", limit, false, true},
+		{
+			"launch limit reached",
+			[]time.Time{
+				now.Add(-30 * time.Minute),
+				now.Add(-20 * time.Minute),
+				now.Add(-10 * time.Minute),
+			},
+			false,
+			true,
+		},
 		{
 			"last launch still starting at the limit",
-			append(limit[1:], now.Add(-time.Minute)),
+			[]time.Time{
+				now.Add(-20 * time.Minute),
+				now.Add(-10 * time.Minute),
+				now.Add(-time.Minute),
+			},
 			false,
 			false,
 		},
@@ -114,6 +122,22 @@ func TestUnmatchedLabels(t *testing.T) {
 				t.Errorf("unmatchedLabels() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUserDataLabels(t *testing.T) {
+	t.Parallel()
+
+	settings := launchSettings{extraLabels: []string{"team-a", "gpu"}}
+
+	script, err := settings.userData("pat", "us-east-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `--labels "${INSTANCE_TYPE},ephemeral,X64,us-east-2,team-a,gpu"`
+	if !strings.Contains(string(script), want) {
+		t.Errorf("user data does not register runners with %s", want)
 	}
 }
 
@@ -209,8 +233,7 @@ func (f *fakeDescribeInstances) DescribeInstances(
 		Name:   new("tag:GitHub Workflow Job Event ID"),
 		Values: []string{"42"},
 	}}
-	if len(in.Filters) != 1 || aws.ToString(in.Filters[0].Name) != aws.ToString(want[0].Name) ||
-		!slices.Equal(in.Filters[0].Values, want[0].Values) {
+	if !reflect.DeepEqual(in.Filters, want) {
 		f.t.Errorf("filters = %+v, want %+v", in.Filters, want)
 	}
 
