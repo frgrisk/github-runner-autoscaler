@@ -113,7 +113,7 @@ func launchInstance(
 		runInput.InstanceType = instanceType
 
 		for _, subnet := range subnets {
-			runInput.NetworkInterfaces[0].SubnetId = aws.String(subnet)
+			runInput.NetworkInterfaces[0].SubnetId = new(subnet)
 
 			output, err := svc.RunInstances(ctx, runInput)
 			if err != nil {
@@ -251,7 +251,7 @@ func (s launchSettings) placement(labels []string) (string, []types.InstanceType
 func fetchPAT(ctx context.Context, cfg aws.Config, secretName string) (string, error) {
 	secretOut, err := secretsmanager.NewFromConfig(cfg).GetSecretValue(
 		ctx,
-		&secretsmanager.GetSecretValueInput{SecretId: aws.String(secretName)},
+		&secretsmanager.GetSecretValueInput{SecretId: new(secretName)},
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to get secret %s: %w", secretName, err)
@@ -302,12 +302,12 @@ func launchRunner(
 
 	tags := []types.Tag{
 		{
-			Key:   aws.String(jobIDTagKey),
-			Value: aws.String(strconv.FormatInt(jobID, 10)),
+			Key:   new(jobIDTagKey),
+			Value: new(strconv.FormatInt(jobID, 10)),
 		},
 		{
-			Key:   aws.String("Name"),
-			Value: aws.String("GitHub Workflow Ephemeral Runner"),
+			Key:   new("Name"),
+			Value: new("GitHub Workflow Ephemeral Runner"),
 		},
 	}
 
@@ -331,26 +331,26 @@ func launchRunner(
 	finalUserData := buf.String()
 
 	runInput := &ec2.RunInstancesInput{
-		MinCount:                          aws.Int32(1),
-		MaxCount:                          aws.Int32(1),
-		EbsOptimized:                      aws.Bool(true),
-		ImageId:                           aws.String(regionCfg.ImageID),
+		MinCount:                          new(int32(1)),
+		MaxCount:                          new(int32(1)),
+		EbsOptimized:                      new(true),
+		ImageId:                           new(regionCfg.ImageID),
 		InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
 		// InstanceType is set per-attempt by launchInstance so it can fall
 		// back across the candidate instanceTypes on capacity errors.
 		IamInstanceProfile: &types.IamInstanceProfileSpecification{
-			Arn: aws.String(s.instanceProfileArn),
+			Arn: new(s.instanceProfileArn),
 		},
 		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 			{
-				AssociatePublicIpAddress: aws.Bool(true),
-				DeleteOnTermination:      aws.Bool(true),
-				DeviceIndex:              aws.Int32(0),
+				AssociatePublicIpAddress: new(true),
+				DeleteOnTermination:      new(true),
+				DeviceIndex:              new(int32(0)),
 				Groups:                   regionCfg.SecurityGroups,
 			},
 		},
-		KeyName:    aws.String(regionCfg.KeyName),
-		Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
+		KeyName:    new(regionCfg.KeyName),
+		Monitoring: &types.RunInstancesMonitoringEnabled{Enabled: new(true)},
 		TagSpecifications: []types.TagSpecification{
 			{
 				ResourceType: types.ResourceTypeInstance,
@@ -362,7 +362,7 @@ func launchRunner(
 			},
 		},
 		// base64 encode user data
-		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
+		UserData: new(base64.StdEncoding.EncodeToString([]byte(finalUserData))),
 	}
 
 	instanceID, err := launchInstance(ctx, svc, runInput, instanceTypes, regionCfg.SubnetID)

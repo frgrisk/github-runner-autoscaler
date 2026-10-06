@@ -221,8 +221,8 @@ func queuedJobs(
 
 	for _, status := range []string{queued, "in_progress"} {
 		opts := &github.ListWorkflowRunsOptions{
-			Status:      status,
-			ListOptions: github.ListOptions{PerPage: pageSize},
+			Status:  status,
+			PerPage: pageSize,
 		}
 
 		for {
@@ -281,8 +281,8 @@ func queuedJobsInRun(
 	var jobs []*github.WorkflowJob
 
 	opts := &github.ListWorkflowJobsOptions{
-		Filter:      "latest",
-		ListOptions: github.ListOptions{PerPage: pageSize},
+		Filter:  "latest",
+		PerPage: pageSize,
 	}
 
 	for {
@@ -314,7 +314,7 @@ func runnerLaunches(
 ) ([]time.Time, error) {
 	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{
 		Filters: []types.Filter{{
-			Name:   aws.String("tag:" + jobIDTagKey),
+			Name:   new("tag:" + jobIDTagKey),
 			Values: []string{strconv.FormatInt(jobID, 10)},
 		}},
 	})

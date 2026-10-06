@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -162,10 +162,10 @@ func TestQueuedJobs(t *testing.T) {
 
 			jobs := map[string][]*github.WorkflowJob{
 				"1": {
-					{ID: aws.Int64(10), Status: aws.String("queued")},
-					{ID: aws.Int64(11), Status: aws.String("in_progress")},
+					{ID: new(int64(10)), Status: new("queued")},
+					{ID: new(int64(11)), Status: new("in_progress")},
 				},
-				"2": {{ID: aws.Int64(20), Status: aws.String("queued")}},
+				"2": {{ID: new(int64(20)), Status: new("queued")}},
 			}[r.PathValue("run")]
 
 			writeJSON(t, w, github.Jobs{Jobs: jobs})
@@ -178,7 +178,7 @@ func TestQueuedJobs(t *testing.T) {
 	gh := github.NewClient(nil)
 	gh.BaseURL, _ = url.Parse(srv.URL + "/")
 
-	jobs, err := queuedJobs(context.Background(), gh, "o", "r", now)
+	jobs, err := queuedJobs(t.Context(), gh, "o", "r", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func (f *fakeDescribeInstances) DescribeInstances(
 	_ ...func(*ec2.Options),
 ) (*ec2.DescribeInstancesOutput, error) {
 	want := []types.Filter{{
-		Name:   aws.String("tag:GitHub Workflow Job Event ID"),
+		Name:   new("tag:GitHub Workflow Job Event ID"),
 		Values: []string{"42"},
 	}}
 	if len(in.Filters) != 1 || aws.ToString(in.Filters[0].Name) != aws.ToString(want[0].Name) ||
@@ -228,14 +228,14 @@ func TestRunnerLaunches(t *testing.T) {
 	client := &fakeDescribeInstances{t: t, pages: []*ec2.DescribeInstancesOutput{
 		{
 			Reservations: []types.Reservation{{Instances: []types.Instance{{LaunchTime: &first}}}},
-			NextToken:    aws.String("more"),
+			NextToken:    new("more"),
 		},
 		{
 			Reservations: []types.Reservation{{Instances: []types.Instance{{LaunchTime: &second}}}},
 		},
 	}}
 
-	launches, err := runnerLaunches(context.Background(), client, 42)
+	launches, err := runnerLaunches(t.Context(), client, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestSplitList(t *testing.T) {
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 
-	err := json.NewEncoder(w).Encode(v)
+	err := json.MarshalWrite(w, v)
 	if err != nil {
 		t.Error(err)
 	}
