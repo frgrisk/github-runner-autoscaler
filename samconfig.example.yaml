@@ -11,6 +11,7 @@ dev:
         - GitHubPATSecretName=github-runner-autoscaler-pat
         - ExtraRunnerLabels=dev
         - ReconcileRepositories=your-org/your-repo
+        - CacheBucketPrefix=your-org-ci-cache-
         - >-
           RunnerConfiguration={
             "us-east-2":{

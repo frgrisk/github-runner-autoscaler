@@ -141,6 +141,32 @@ func TestUserDataLabels(t *testing.T) {
 	}
 }
 
+func TestUserDataCacheBucket(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, prefix, want string
+	}{
+		{"prefix set", "ci-cache-", `CACHE_BUCKET="ci-cache-ap-southeast-5"`},
+		{"prefix unset", "", `CACHE_BUCKET=""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			settings := launchSettings{cacheBucketPrefix: tc.prefix}
+
+			script, err := settings.userData("pat", "ap-southeast-5")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !strings.Contains(string(script), tc.want) {
+				t.Errorf("user data does not set %s", tc.want)
+			}
+		})
+	}
+}
+
 func TestQueuedJobs(t *testing.T) {
 	t.Parallel()
 

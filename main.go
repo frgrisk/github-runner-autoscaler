@@ -202,6 +202,9 @@ type launchSettings struct {
 	secretName         string
 	extraLabels        []string
 	instanceProfileArn string
+	// cacheBucketPrefix, when set, points runs-on/cache on each runner at
+	// the bucket named by the prefix plus the runner's region.
+	cacheBucketPrefix string
 }
 
 func loadLaunchSettings() (launchSettings, error) {
@@ -233,6 +236,7 @@ func loadLaunchSettings() (launchSettings, error) {
 		secretName:         secretName,
 		extraLabels:        splitList(os.Getenv("EXTRA_RUNNER_LABELS")),
 		instanceProfileArn: instanceProfileArn,
+		cacheBucketPrefix:  os.Getenv("CACHE_BUCKET_PREFIX"),
 	}, nil
 }
 
@@ -288,9 +292,15 @@ func (s launchSettings) registeredLabels(region string) []string {
 func (s launchSettings) userData(pat, region string) ([]byte, error) {
 	var buf bytes.Buffer
 
+	var cacheBucket string
+	if s.cacheBucketPrefix != "" {
+		cacheBucket = s.cacheBucketPrefix + region
+	}
+
 	err := userDataTemplate.Execute(&buf, map[string]string{
-		"GitHubPAT": pat,
-		"Labels":    strings.Join(s.registeredLabels(region), ","),
+		"GitHubPAT":   pat,
+		"Labels":      strings.Join(s.registeredLabels(region), ","),
+		"CacheBucket": cacheBucket,
 	})
 
 	return buf.Bytes(), err
