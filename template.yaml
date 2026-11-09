@@ -23,6 +23,9 @@ Parameters:
   CacheBucketPrefix:
     Type: String
     Default: ""
+    # user-data.sh pastes the bucket name into a shell string unescaped, so
+    # only S3 bucket-name characters may reach it.
+    AllowedPattern: "^[a-z0-9.-]*$"
     Description: >-
       Prefix of the per-region S3 buckets runs-on/cache uses on the runners.
       A runner in region R uses the bucket named prefix + R, and the runner
