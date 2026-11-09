@@ -18,7 +18,7 @@ This compiles the Go Lambda binary to a Linux ARM64 executable named `bootstrap`
 ```bash
 AWS_PROFILE=<account profile> sam deploy --config-env <env>
 ```
-Environments in `samconfig.yaml` are named per stack, not per tier: `vor_stream_sdlc`, `fairstone` (both SDLC account), `frgrisk_pcf`, `tdi`. The config does not pin an AWS profile; the caller sets it.
+Environments in `samconfig.yaml` are named per stack, not per tier: `vor_stream_sdlc`, `fairstone` (both SDLC account), `tdi`. The config does not pin an AWS profile; the caller sets it.
 
 ### Local Development
 To test changes locally before deployment:
