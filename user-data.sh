@@ -192,6 +192,15 @@ chmod +x "${HOOK_DIR}/job-started.sh"
 chown -R ubuntu:ubuntu "${HOOK_DIR}"
 echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=${HOOK_DIR}/job-started.sh" | sudo -u ubuntu tee -a .env >/dev/null
 
+# runs-on/cache stores caches in this bucket when the variable is set and in
+# GitHub's cache otherwise. It reads the region from RUNS_ON_AWS_REGION, which,
+# unlike AWS_REGION, changes nothing for a job's other AWS calls.
+CACHE_BUCKET="{{.CacheBucket}}"
+if [ -n "${CACHE_BUCKET}" ]; then
+    printf 'RUNS_ON_S3_BUCKET_CACHE=%s\nRUNS_ON_AWS_REGION=%s\n' "${CACHE_BUCKET}" "${REGION}" \
+        | sudo -u ubuntu tee -a .env >/dev/null
+fi
+
 idle_watchdog() {
     # A failed curl must not end the watchdog.
     set +e

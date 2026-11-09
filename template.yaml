@@ -20,8 +20,21 @@ Parameters:
       every two minutes and given a runner if theirs never started. Empty
       disables the reconciler.
 
+  CacheBucketPrefix:
+    Type: String
+    Default: ""
+    # user-data.sh pastes the bucket name into a shell string unescaped, so
+    # only S3 bucket-name characters may reach it.
+    AllowedPattern: "^[a-z0-9.-]*$"
+    Description: >-
+      Prefix of the per-region S3 buckets runs-on/cache uses on the runners.
+      A runner in region R uses the bucket named prefix + R, and the runner
+      role may read and write every bucket with the prefix. Empty leaves
+      runners on GitHub's cache.
+
 Conditions:
   ReconcilerEnabled: !Not [!Equals [!Ref ReconcileRepositories, ""]]
+  CacheEnabled: !Not [!Equals [!Ref CacheBucketPrefix, ""]]
 
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
@@ -37,6 +50,7 @@ Globals:
         EXTRA_RUNNER_LABELS: !Ref ExtraRunnerLabels
         RUNNER_CONFIGURATION: !Ref RunnerConfiguration
         INSTANCE_PROFILE_ARN: !GetAtt RunnerInstanceProfile.Arn
+        CACHE_BUCKET_PREFIX: !Ref CacheBucketPrefix
 
 Resources:
   # IAM Role for EC2 instances
@@ -64,6 +78,20 @@ Resources:
                   - logs:PutLogEvents
                   - logs:DescribeLogStreams
                 Resource: !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/ec2/github-runner:*'
+        - !If
+          - CacheEnabled
+          - PolicyName: ActionsCachePolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                    - s3:ListBucket
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${CacheBucketPrefix}*'
+          - !Ref AWS::NoValue
 
   RunnerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
